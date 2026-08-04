@@ -253,9 +253,9 @@
         <div class="piece-main">
           <input class="piece-label-input" value="${escapeAttr(p.label)}" maxlength="24" aria-label="Label" />
           <div class="piece-dims">
-            <input type="number" class="edit-w mono" min="0.1" step="0.1" value="${fmt(p.w)}" aria-label="Width" />
+            <input type="number" class="edit-w mono" min="0.1" step="any" value="${fmt(p.w)}" aria-label="Width" />
             <span>×</span>
-            <input type="number" class="edit-d mono" min="0.1" step="0.1" value="${fmt(p.d)}" aria-label="Depth" />
+            <input type="number" class="edit-d mono" min="0.1" step="any" value="${fmt(p.d)}" aria-label="Depth" />
             <span>${unitLabel()}</span>
           </div>
         </div>
@@ -301,8 +301,6 @@
     els.snapToggle.checked = state.snap;
     els.unitLabels.forEach((n) => (n.textContent = unitLabel()));
     els.unitBtns.forEach((b) => b.classList.toggle("is-active", b.dataset.unit === state.unit));
-    const step = unitStep();
-    [els.roomW, els.roomL, els.addW, els.addD].forEach((i) => (i.step = step));
   }
 
   /* ================= Piece operations ================= */
