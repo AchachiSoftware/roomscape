@@ -11,6 +11,18 @@
   const STORE_KEY = "room-planner:v1";
   const M_PER_FT = 0.3048;
 
+  /* ---- Supported display units. Geometry is always meters internally. ----
+     perM  : display units per meter
+     step  : snap / input increment, in display units
+     grid  : nominal minor grid cell, in display units
+     major : heavier grid line every N display units (multiple of grid) */
+  const UNITS = {
+    ft: { perM: 1 / M_PER_FT, label: "ft", step: 0.5,  grid: 1,   major: 5,   metric: false },
+    in: { perM: 1 / 0.0254,   label: "in", step: 1,    grid: 6,   major: 12,  metric: false },
+    m:  { perM: 1,            label: "m",  step: 0.05, grid: 0.5, major: 1,   metric: true  },
+    cm: { perM: 100,          label: "cm", step: 5,    grid: 25,  major: 100, metric: true  },
+  };
+
   /* ---- Muted categorical furniture palette (distinct from UI teal) ---- */
   const PALETTE = [
     "#C56B4E", // terracotta
@@ -66,10 +78,11 @@
   };
 
   /* ================= Unit helpers ================= */
-  const unitStep = () => (state.unit === "ft" ? 0.5 : 0.1); // grid & snap increment, in current unit
-  const toDisplay = (m) => (state.unit === "ft" ? m / M_PER_FT : m);
-  const toMeters  = (v) => (state.unit === "ft" ? v * M_PER_FT : v);
-  const unitLabel = () => (state.unit === "ft" ? "ft" : "m");
+  const U = () => UNITS[state.unit] || UNITS.ft;
+  const unitStep = () => U().step;                 // snap increment, in current unit
+  const toDisplay = (m) => m * U().perM;
+  const toMeters  = (v) => v / U().perM;
+  const unitLabel = () => U().label;
 
   function fmt(m) {
     const v = toDisplay(m);
@@ -123,6 +136,22 @@
     p.y = Math.max(0, Math.min(p.y, Math.max(0, state.room.l - fp.d)));
   }
 
+  /* Number of grid cells along a dimension: even (so a line hits the exact
+     center), close to the nominal cell size, and never so dense that lines
+     blur together. Returns an even integer >= 2. */
+  function evenCells(dimM, cellM, s) {
+    let n = Math.max(2, Math.round(dimM / cellM));
+    if (n % 2 !== 0) {
+      const cLow = dimM / (n - 1), cHigh = dimM / (n + 1);
+      n = Math.abs(cLow - cellM) <= Math.abs(cHigh - cellM) ? n - 1 : n + 1;
+    }
+    // Keep minor lines at least ~7px apart on screen
+    let maxN = Math.floor((dimM * s) / 7);
+    if (maxN % 2) maxN -= 1;
+    if (maxN >= 2) n = Math.min(n, maxN);
+    return Math.max(2, n);
+  }
+
   /* ================= Rendering ================= */
   function computeScale() {
     const pad = 44; // room for edge dimension labels
@@ -143,12 +172,20 @@
     els.floor.dataset.w = fmtDim(state.room.w);
     els.floor.dataset.l = fmtDim(state.room.l);
 
-    // Grid: minor every unit-step, major every "big" step (5 units or 1m)
-    const minorM = toMeters(unitStep());
-    const majorM = toMeters(state.unit === "ft" ? 5 : 1);
-    const minor = minorM * s, major = majorM * s;
+    // Grid: scale each axis to an EVEN number of cells so a real grid line
+    // falls on the room's midline. Cell size is nudged toward the nominal
+    // grid unit rather than splitting a square.
+    const u = U();
+    const gridM = u.grid / u.perM;                       // nominal minor cell (m)
+    const majorMult = Math.max(1, Math.round(u.major / u.grid));
+    const nx = evenCells(state.room.w, gridM, s);
+    const ny = evenCells(state.room.l, gridM, s);
+    const minorX = (state.room.w / nx) * s;
+    const minorY = (state.room.l / ny) * s;
+    const majorX = minorX * majorMult;
+    const majorY = minorY * majorMult;
     els.floor.style.backgroundSize =
-      `${minor}px ${minor}px, ${minor}px ${minor}px, ${major}px ${major}px, ${major}px ${major}px`;
+      `${minorX}px ${minorY}px, ${minorX}px ${minorY}px, ${majorX}px ${majorY}px, ${majorX}px ${majorY}px`;
 
     // Furniture — reconcile DOM
     const seen = new Set();
@@ -194,9 +231,10 @@
 
   function renderMeta() {
     const areaM = state.room.w * state.room.l;
-    const areaDisp = state.unit === "ft"
-      ? `${Math.round(areaM / (M_PER_FT * M_PER_FT))} ft²`
-      : `${(Math.round(areaM * 10) / 10)} m²`;
+    // Report area in the system's large unit: ft² for imperial, m² for metric.
+    const areaDisp = U().metric
+      ? `${(Math.round(areaM * 10) / 10)} m²`
+      : `${Math.round(areaM / (M_PER_FT * M_PER_FT))} ft²`;
     els.roomArea.textContent = areaDisp;
     const n = state.pieces.length;
     els.pieceCount.textContent = `${n} ${n === 1 ? "piece" : "pieces"}`;
@@ -263,6 +301,8 @@
     els.snapToggle.checked = state.snap;
     els.unitLabels.forEach((n) => (n.textContent = unitLabel()));
     els.unitBtns.forEach((b) => b.classList.toggle("is-active", b.dataset.unit === state.unit));
+    const step = unitStep();
+    [els.roomW, els.roomL, els.addW, els.addD].forEach((i) => (i.step = step));
   }
 
   /* ================= Piece operations ================= */
@@ -354,12 +394,11 @@
       const color = PALETTE[i % PALETTE.length];
       chip.innerHTML = `<span class="dot" style="background:${color}"></span>${preset.label}`;
       chip.addEventListener("click", () => {
-        // preset dims authored in feet -> show in current unit
-        const wDisp = state.unit === "ft" ? preset.w : preset.w * M_PER_FT;
-        const dDisp = state.unit === "ft" ? preset.d : preset.d * M_PER_FT;
+        // preset dims are authored in feet -> convert to the current unit
+        const round1 = (x) => Math.round(x * 10) / 10;
         els.addLabel.value = preset.label;
-        els.addW.value = Math.round(wDisp * 10) / 10;
-        els.addD.value = Math.round(dDisp * 10) / 10;
+        els.addW.value = round1(toDisplay(preset.w * M_PER_FT));
+        els.addD.value = round1(toDisplay(preset.d * M_PER_FT));
         els.addLabel.focus();
       });
       els.presets.appendChild(chip);
