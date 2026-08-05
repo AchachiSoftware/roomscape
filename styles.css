@@ -222,6 +222,34 @@ input:focus-visible {
 .btn-primary { background: var(--accent); color: #fff; }
 :root[data-theme="dark"] .btn-primary { color: var(--surface-2); }
 .btn-primary:hover { background: var(--accent-ink); }
+.btn-ghost {
+  background: var(--surface-2); color: var(--ink); border-color: var(--line);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: 13px; padding: 9px 10px;
+}
+.btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Openings panel */
+.opening-add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.opening-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.opening-list:empty { display: none; }
+.opening-item {
+  border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px;
+  background: var(--surface-2);
+  display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+}
+.opening-item.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
+:root[data-theme="dark"] .opening-item.selected { box-shadow: 0 0 0 2px rgba(95,182,196,0.22); }
+.op-icon { display: grid; place-items: center; width: 22px; height: 22px; color: var(--accent); }
+.op-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.op-kind { font-weight: 600; font-size: 13px; }
+.op-wall { color: var(--muted); font-weight: 500; }
+.op-dims { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+.op-dims input {
+  width: 52px; padding: 3px 5px; font-size: 12px; text-align: center;
+  border-radius: 6px; background: var(--surface); border: 1px solid var(--line);
+}
+.op-actions { display: flex; gap: 4px; }
 .link-btn, .text-btn {
   border: 0; background: transparent; color: var(--accent);
   font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; padding: 0;
@@ -237,7 +265,16 @@ input:focus-visible {
 }
 .piece-item.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
 :root[data-theme="dark"] .piece-item.selected { box-shadow: 0 0 0 2px rgba(95,182,196,0.22); }
-.swatch { width: 16px; height: 16px; border-radius: 5px; border: 1px solid rgba(0,0,0,0.15); }
+/* Native color picker styled as a compact swatch */
+.swatch {
+  -webkit-appearance: none; appearance: none;
+  width: 20px; height: 20px; padding: 0; border-radius: 5px;
+  border: 1px solid rgba(0,0,0,0.18); background: none; cursor: pointer;
+}
+.swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.swatch::-webkit-color-swatch { border: none; border-radius: 4px; }
+.swatch::-moz-color-swatch { border: none; border-radius: 4px; }
+.swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .piece-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .piece-label-input {
   border: 0; background: transparent; color: var(--ink);
@@ -317,9 +354,29 @@ input:focus-visible {
   transform: translateY(-0.5px);
 }
 
+/* Doors & windows — graphics drawn in an SVG overlay, with a separate
+   transparent hit box per opening for dragging/selection. */
+.openings-layer {
+  position: absolute; top: 0; left: 0;
+  overflow: visible; pointer-events: none;
+  z-index: 5;   /* above furniture, so door swings / windows stay visible for clearance */
+}
+.door-arc, .door-leaf { fill: none; stroke: #7C8B93; stroke-width: 2; stroke-linecap: round; }
+.door-leaf { stroke-width: 2.5; }
+.door-arc { opacity: 0.85; }
+.win-body { fill: rgba(91, 133, 166, 0.32); stroke: #5B85A6; stroke-width: 1.5; }
+.win-line { stroke: #5B85A6; stroke-width: 1.5; }
+.opening-hit {
+  position: absolute; top: 0; left: 0; z-index: 1;
+  cursor: grab; touch-action: none; border-radius: 3px;
+}
+.opening-hit:hover { background: rgba(53, 112, 126, 0.10); }
+.opening-hit.selected { outline: 2px solid var(--accent); outline-offset: 1px; background: rgba(53, 112, 126, 0.12); }
+.opening-hit.dragging { cursor: grabbing; }
+
 /* Furniture */
 .piece {
-  position: absolute; top: 0; left: 0;
+  position: absolute; top: 0; left: 0; z-index: 2;
   border-radius: 4px;
   border: 1.5px solid rgba(0,0,0,0.22);
   display: flex; flex-direction: column; align-items: center; justify-content: center;

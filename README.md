@@ -13,6 +13,13 @@ scaled furniture around to see how it fits — built for planning a new apartmen
   (bed, sofa, dining table, desk…) to pre-fill common sizes.
 - **Arrange by dragging** — move pieces around the floor; optional snap-to-grid
   keeps things aligned. Select a piece to rotate 90°, duplicate, or remove it.
+- **Recolor any piece** — each piece has a color swatch (native color picker);
+  the label text automatically flips to stay readable on the chosen fill.
+- **Doors & windows** — add a door or window and drag it onto any wall (it snaps
+  to the nearest one and slides along it). Doors draw a true swing arc so you can
+  eyeball clearance; flip the hinge with the flip button or `F`. Set each
+  opening's width in the current unit. Door/window graphics draw above furniture
+  so you can see when a piece blocks an opening.
 - **Feet, inches, meters, or centimeters** — switch units anytime from the
   segmented control; geometry is stored internally in meters so nothing gets
   distorted, and area is reported in the system's large unit (ft² or m²).

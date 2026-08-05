@@ -47,6 +47,10 @@
     { label: "Bookshelf",   w: 3.0, d: 1.0 },
   ];
 
+  /* Default opening sizes, authored in feet */
+  const DOOR_W_M = 2.75 * M_PER_FT;   // ~33 in interior door
+  const WINDOW_W_M = 3.0 * M_PER_FT;  // ~36 in window
+
   /* ---- Default state ---- */
   const defaultState = () => ({
     unit: "ft",
@@ -55,6 +59,7 @@
     zoom: 1,
     colorSeed: 0,
     pieces: [],
+    openings: [],   // { id, kind:'door'|'window', wall, pos(m), width(m), flip }
   });
 
   let state = load() || defaultState();
@@ -69,6 +74,8 @@
     presets: $("presets"), addForm: $("addForm"),
     addLabel: $("addLabel"), addW: $("addW"), addD: $("addD"),
     pieceList: $("pieceList"), emptyPieces: $("emptyPieces"), clearAll: $("clearAll"),
+    addDoor: $("addDoor"), addWindow: $("addWindow"),
+    openingList: $("openingList"), emptyOpenings: $("emptyOpenings"), openingsLayer: $("openingsLayer"),
     snapToggle: $("snapToggle"),
     zoomIn: $("zoomIn"), zoomOut: $("zoomOut"), zoomFit: $("zoomFit"),
     stageScroll: $("stageScroll"), stage: $("stage"), floor: $("floor"),
@@ -101,6 +108,7 @@
       if (!raw) return null;
       const s = JSON.parse(raw);
       if (!s || !s.room || !Array.isArray(s.pieces)) return null;
+      if (!Array.isArray(s.openings)) s.openings = []; // migrate older saves
       return s;
     } catch (_) { return null; }
   }
@@ -134,6 +142,28 @@
     const fp = footprint(p);
     p.x = Math.max(0, Math.min(p.x, Math.max(0, state.room.w - fp.w)));
     p.y = Math.max(0, Math.min(p.y, Math.max(0, state.room.l - fp.d)));
+  }
+
+  /* ---- Openings (doors/windows) attach to a wall at an offset along it ---- */
+  const isHoriz = (o) => o.wall === "top" || o.wall === "bottom";
+  const wallLen = (o) => (isHoriz(o) ? state.room.w : state.room.l);
+  function clampOpening(o) {
+    o.width = Math.min(o.width, wallLen(o));           // never wider than the wall
+    o.pos = Math.max(0, Math.min(o.pos, wallLen(o) - o.width));
+  }
+  // Pixel geometry for a given scale. Returns endpoints on the wall (a->b),
+  // the interior normal (into the room), and the wall-line coordinate.
+  function openingPx(o, s) {
+    const fw = state.room.w * s, fh = state.room.l * s;
+    const len = o.width * s, a = o.pos * s, b = (o.pos + o.width) * s;
+    if (isHoriz(o)) {
+      const y = o.wall === "top" ? 0 : fh;
+      const ny = o.wall === "top" ? 1 : -1;            // interior direction (down/up)
+      return { horiz: true, y, ny, a, b, len, fw, fh };
+    }
+    const x = o.wall === "left" ? 0 : fw;
+    const nx = o.wall === "left" ? 1 : -1;             // interior direction (right/left)
+    return { horiz: false, x, nx, a, b, len, fw, fh };
   }
 
   /* Number of grid cells along a dimension: even (so a line hits the exact
@@ -200,9 +230,93 @@
       if (!seen.has(n.dataset.id)) n.remove();
     });
 
+    reconcileOpenings(s);
     renderList();
+    renderOpeningList();
     renderMeta();
     syncInputs();
+  }
+
+  /* Reconcile the per-opening hit boxes, then repaint the SVG graphics. */
+  function reconcileOpenings(s) {
+    const seen = new Set();
+    for (const o of state.openings) {
+      seen.add(o.id);
+      let node = els.floor.querySelector(`.opening-hit[data-id="${o.id}"]`);
+      if (!node) node = createOpeningHit(o);
+      positionOpeningHit(node, o, s);
+    }
+    els.floor.querySelectorAll(".opening-hit").forEach((n) => {
+      if (!seen.has(n.dataset.id)) n.remove();
+    });
+    drawOpenings(s);
+  }
+
+  function createOpeningHit(o) {
+    const node = document.createElement("div");
+    node.className = "opening-hit";
+    node.dataset.id = o.id;
+    node.title = o.kind === "door" ? "Door — drag to a wall" : "Window — drag to a wall";
+    node.addEventListener("pointerdown", (e) => startDragOpening(e, o, node));
+    els.floor.appendChild(node);
+    return node;
+  }
+
+  function positionOpeningHit(node, o, s) {
+    const g = openingPx(o, s);
+    const pad = 9;                 // grab margin perpendicular to a window
+    let x, y, w, h;
+    if (o.kind === "door") {
+      const depth = o.width * s;   // swing reaches one door-width into the room
+      if (g.horiz) { x = g.a; w = g.len; y = g.ny > 0 ? g.y : g.y - depth; h = depth; }
+      else         { y = g.a; h = g.len; x = g.nx > 0 ? g.x : g.x - depth; w = depth; }
+    } else {
+      if (g.horiz) { x = g.a; w = g.len; y = g.y - pad; h = pad * 2; }
+      else         { y = g.a; h = g.len; x = g.x - pad; w = pad * 2; }
+    }
+    node.style.transform = `translate(${x}px, ${y}px)`;
+    node.style.width = Math.max(6, w) + "px";
+    node.style.height = Math.max(6, h) + "px";
+    node.classList.toggle("selected", o.id === selectedId);
+  }
+
+  /* Paint all door/window graphics into the shared SVG overlay. */
+  function drawOpenings(s) {
+    const fw = state.room.w * s, fh = state.room.l * s;
+    els.openingsLayer.setAttribute("width", fw);
+    els.openingsLayer.setAttribute("height", fh);
+    let out = "";
+    for (const o of state.openings) {
+      const g = openingPx(o, s);
+      if (o.kind === "window") {
+        const T = 7;
+        if (g.horiz) {
+          out += `<rect class="win-body" x="${g.a}" y="${g.y - T / 2}" width="${g.len}" height="${T}" />`
+              +  `<line class="win-line" x1="${g.a}" y1="${g.y}" x2="${g.b}" y2="${g.y}" />`;
+        } else {
+          out += `<rect class="win-body" x="${g.x - T / 2}" y="${g.a}" width="${T}" height="${g.len}" />`
+              +  `<line class="win-line" x1="${g.x}" y1="${g.a}" x2="${g.x}" y2="${g.b}" />`;
+        }
+      } else {
+        // Door: hinge H, opposite jamb J, open leaf tip L (perpendicular into room)
+        const r = o.width * s;
+        let H, J, L;
+        if (g.horiz) {
+          const p1 = [g.a, g.y], p2 = [g.b, g.y];
+          H = o.flip ? p2 : p1; J = o.flip ? p1 : p2;
+          L = [H[0], g.y + g.ny * r];
+        } else {
+          const p1 = [g.x, g.a], p2 = [g.x, g.b];
+          H = o.flip ? p2 : p1; J = o.flip ? p1 : p2;
+          L = [g.x + g.nx * r, H[1]];
+        }
+        const cross = (J[0] - H[0]) * (L[1] - H[1]) - (J[1] - H[1]) * (L[0] - H[0]);
+        const sweep = cross < 0 ? 1 : 0;
+        out += `<path class="door-arc" d="M ${J[0]} ${J[1]} A ${r} ${r} 0 0 ${sweep} ${L[0]} ${L[1]}" />`
+            +  `<line class="door-leaf" x1="${H[0]}" y1="${H[1]}" x2="${L[0]}" y2="${L[1]}" />`;
+      }
+    }
+    els.openingsLayer.innerHTML = out;
   }
 
   function createPieceNode(p) {
@@ -249,7 +363,7 @@
       li.className = "piece-item" + (p.id === selectedId ? " selected" : "");
       li.dataset.id = p.id;
       li.innerHTML = `
-        <span class="swatch" style="background:${p.color}"></span>
+        <input type="color" class="swatch" value="${p.color}" title="Change color" aria-label="Color for ${escapeAttr(p.label)}" />
         <div class="piece-main">
           <input class="piece-label-input" value="${escapeAttr(p.label)}" maxlength="24" aria-label="Label" />
           <div class="piece-dims">
@@ -271,9 +385,15 @@
           </button>
         </div>`;
 
+      li.querySelector(".swatch").addEventListener("input", (e) => {
+        p.color = e.target.value;
+        const node = els.floor.querySelector(`.piece[data-id="${p.id}"]`);
+        if (node) { node.style.background = p.color; node.style.color = textOn(p.color); }
+        save();
+      });
       li.querySelector(".piece-label-input").addEventListener("input", (e) => {
         p.label = e.target.value; save();
-        const node = els.floor.querySelector(`[data-id="${p.id}"] .p-label`);
+        const node = els.floor.querySelector(`.piece[data-id="${p.id}"] .p-label`);
         if (node) node.textContent = p.label;
       });
       li.querySelector(".edit-w").addEventListener("change", (e) => {
@@ -292,6 +412,51 @@
         select(p.id);
       });
       els.pieceList.appendChild(li);
+    }
+  }
+
+  const ICON = {
+    door: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 21h16M7 21V4h8v17M13 12v.01"/><path d="M15 4a5 5 0 0 1 5 5v12" stroke-opacity="0.5"/></svg>`,
+    window: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M12 4v16M4 12h16"/></svg>`,
+    flip: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg>`,
+    trash: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13h10l1-13"/></svg>`,
+  };
+
+  function renderOpeningList() {
+    els.openingList.innerHTML = "";
+    els.emptyOpenings.style.display = state.openings.length ? "none" : "block";
+    for (const o of state.openings) {
+      const li = document.createElement("li");
+      li.className = "opening-item" + (o.id === selectedId ? " selected" : "");
+      li.dataset.id = o.id;
+      const wallName = o.wall.charAt(0).toUpperCase() + o.wall.slice(1);
+      const flipBtn = o.kind === "door"
+        ? `<button class="mini-btn act-flip" title="Flip hinge" aria-label="Flip hinge">${ICON.flip}</button>` : "";
+      li.innerHTML = `
+        <span class="op-icon">${ICON[o.kind]}</span>
+        <div class="op-main">
+          <div class="op-kind">${o.kind === "door" ? "Door" : "Window"} <span class="op-wall">· ${wallName} wall</span></div>
+          <div class="op-dims">
+            <input type="number" class="op-w mono" min="0.1" step="any" value="${fmt(o.width)}" aria-label="Width" />
+            <span>${unitLabel()} wide</span>
+          </div>
+        </div>
+        <div class="op-actions">
+          ${flipBtn}
+          <button class="mini-btn danger act-opdel" title="Remove" aria-label="Remove">${ICON.trash}</button>
+        </div>`;
+      li.querySelector(".op-w").addEventListener("change", (e) => {
+        o.width = Math.max(0.05, toMeters(parseFloat(e.target.value) || 0));
+        clampOpening(o); save(); render();
+      });
+      const flip = li.querySelector(".act-flip");
+      if (flip) flip.addEventListener("click", () => flipOpening(o));
+      li.querySelector(".act-opdel").addEventListener("click", () => removeOpening(o.id));
+      li.addEventListener("click", (e) => {
+        if (e.target.closest("button, input")) return;
+        select(o.id);
+      });
+      els.openingList.appendChild(li);
     }
   }
 
@@ -341,6 +506,24 @@
     render();
   }
 
+  /* ================= Opening operations ================= */
+  function addOpening(kind) {
+    const width = kind === "door" ? DOOR_W_M : WINDOW_W_M;
+    const o = { id: uid(), kind, wall: "top", width, pos: 0, flip: false };
+    o.pos = Math.max(0, state.room.w / 2 - width / 2);   // centered on the top wall
+    clampOpening(o);
+    state.openings.push(o);
+    selectedId = o.id;
+    save(); render();
+    return o;
+  }
+  function flipOpening(o) { o.flip = !o.flip; save(); render(); }
+  function removeOpening(id) {
+    state.openings = state.openings.filter((o) => o.id !== id);
+    if (selectedId === id) selectedId = null;
+    save(); render();
+  }
+
   /* ================= Dragging ================= */
   let drag = null;
   function startDrag(e, p, node) {
@@ -383,6 +566,48 @@
     save();
   }
 
+  /* ---- Dragging an opening: it slides along its wall and snaps to whichever
+       wall is nearest, so you can drag a door from one wall to another. ---- */
+  let odrag = null;
+  function startDragOpening(e, o, node) {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectedId = o.id;
+    node.classList.add("dragging");
+    node.setPointerCapture(e.pointerId);
+    odrag = { o, node, pointerId: e.pointerId, rect: els.floor.getBoundingClientRect() };
+    render(); // reflect selection in the lists/outline
+    node.addEventListener("pointermove", onDragOpening);
+    node.addEventListener("pointerup", endDragOpening);
+    node.addEventListener("pointercancel", endDragOpening);
+  }
+  function onDragOpening(e) {
+    if (!odrag) return;
+    const { o, rect } = odrag;
+    const px = (e.clientX - rect.left) / baseScale;    // pointer in room meters
+    const py = (e.clientY - rect.top) / baseScale;
+    const W = state.room.w, L = state.room.l;
+    // Nearest wall by perpendicular distance
+    const d = { top: Math.abs(py), bottom: Math.abs(L - py), left: Math.abs(px), right: Math.abs(W - px) };
+    o.wall = Object.keys(d).reduce((best, k) => (d[k] < d[best] ? k : best), "top");
+    const along = isHoriz(o) ? px : py;                // position of pointer along the wall
+    o.pos = snapVal(along - o.width / 2);
+    clampOpening(o);
+    drawOpenings(baseScale);
+    positionOpeningHit(odrag.node, o, baseScale);
+  }
+  function endDragOpening(e) {
+    if (!odrag) return;
+    odrag.node.classList.remove("dragging");
+    try { odrag.node.releasePointerCapture(odrag.pointerId); } catch (_) {}
+    odrag.node.removeEventListener("pointermove", onDragOpening);
+    odrag.node.removeEventListener("pointerup", endDragOpening);
+    odrag.node.removeEventListener("pointercancel", endDragOpening);
+    odrag = null;
+    save(); render();
+  }
+
   /* ================= Presets UI ================= */
   function buildPresets() {
     PRESETS.forEach((preset, i) => {
@@ -412,10 +637,15 @@
       if (w > 0) state.room.w = w;
       if (l > 0) state.room.l = l;
       state.pieces.forEach(clampPiece);
+      state.openings.forEach(clampOpening);
       save(); render();
     };
     els.roomW.addEventListener("change", applyRoom);
     els.roomL.addEventListener("change", applyRoom);
+
+    // Add doors / windows
+    els.addDoor.addEventListener("click", () => addOpening("door"));
+    els.addWindow.addEventListener("click", () => addOpening("window"));
 
     // Add piece
     els.addForm.addEventListener("submit", (e) => {
@@ -474,21 +704,29 @@
       }
     });
 
-    // Keyboard: delete selected, rotate with R, nudge with arrows
+    // Keyboard: delete selected, rotate/flip, nudge with arrows
     document.addEventListener("keydown", (e) => {
       if (!selectedId) return;
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      const p = state.pieces.find((x) => x.id === selectedId);
-      if (!p) return;
       const nudge = toMeters(unitStep());
-      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removePiece(p.id); }
-      else if (e.key === "r" || e.key === "R") { rotatePiece(p); }
-      else if (e.key === "ArrowLeft")  { p.x -= nudge; clampPiece(p); save(); render(); }
-      else if (e.key === "ArrowRight") { p.x += nudge; clampPiece(p); save(); render(); }
-      else if (e.key === "ArrowUp")    { p.y -= nudge; clampPiece(p); save(); render(); }
-      else if (e.key === "ArrowDown")  { p.y += nudge; clampPiece(p); save(); render(); }
-      else return;
+      const p = state.pieces.find((x) => x.id === selectedId);
+      const o = state.openings.find((x) => x.id === selectedId);
+      if (p) {
+        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removePiece(p.id); }
+        else if (e.key === "r" || e.key === "R") { rotatePiece(p); }
+        else if (e.key === "ArrowLeft")  { p.x -= nudge; clampPiece(p); save(); render(); }
+        else if (e.key === "ArrowRight") { p.x += nudge; clampPiece(p); save(); render(); }
+        else if (e.key === "ArrowUp")    { p.y -= nudge; clampPiece(p); save(); render(); }
+        else if (e.key === "ArrowDown")  { p.y += nudge; clampPiece(p); save(); render(); }
+        else return;
+      } else if (o) {
+        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeOpening(o.id); }
+        else if ((e.key === "f" || e.key === "F") && o.kind === "door") { flipOpening(o); }
+        else if (e.key === "ArrowLeft" || e.key === "ArrowUp")    { o.pos -= nudge; clampOpening(o); save(); render(); }
+        else if (e.key === "ArrowRight" || e.key === "ArrowDown") { o.pos += nudge; clampOpening(o); save(); render(); }
+        else return;
+      } else return;
       if (e.key.startsWith("Arrow")) e.preventDefault();
     });
 
@@ -516,10 +754,15 @@
   }
 
   function seedExample() {
-    // First-run: drop in a couple of pieces so the tool isn't empty
-    if (state.pieces.length) return;
+    // First-run: drop in a couple of pieces + a door and window
+    if (state.pieces.length || state.openings.length) return;
     addPiece("Queen bed", 5, 6.7);
     addPiece("Dresser", 5, 1.7);
+    const win = addOpening("window");            // top wall, centered
+    const door = addOpening("door");
+    door.wall = "bottom";
+    door.pos = Math.max(0, state.room.w / 2 - door.width / 2);
+    clampOpening(door);
     selectedId = null;
   }
 
