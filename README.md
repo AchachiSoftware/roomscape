@@ -17,9 +17,11 @@ scaled furniture around to see how it fits — built for planning a new apartmen
   the label text automatically flips to stay readable on the chosen fill.
 - **Doors & windows** — add a door or window and drag it onto any wall (it snaps
   to the nearest one and slides along it). Doors draw a true swing arc so you can
-  eyeball clearance; flip the hinge with the flip button or `F`. Set each
-  opening's width in the current unit. Door/window graphics draw above furniture
-  so you can see when a piece blocks an opening.
+  eyeball clearance. Toggle a door's swing **inward or outward** (button or `O`)
+  and flip the hinge side (button or `F`). Set each opening's width in the
+  current unit. Door/window graphics draw above furniture so you can see when a
+  piece blocks an opening; the view reserves margin so outward swings stay
+  on-screen.
 - **Feet, inches, meters, or centimeters** — switch units anytime from the
   segmented control; geometry is stored internally in meters so nothing gets
   distorted, and area is reported in the system's large unit (ft² or m²).

@@ -187,7 +187,12 @@
     const pad = 44; // room for edge dimension labels
     const availW = Math.max(120, els.stageScroll.clientWidth - pad * 2);
     const availH = Math.max(120, els.stageScroll.clientHeight - pad * 2);
-    const fit = Math.min(availW / state.room.w, availH / state.room.l);
+    // Reserve margin so outward door swings stay on-screen: an outward door
+    // reaches up to its own width beyond the wall.
+    const outM = state.openings.reduce(
+      (m, o) => (o.kind === "door" && o.out ? Math.max(m, o.width) : m), 0);
+    const fit = Math.min(availW / (state.room.w + 2 * outM),
+                         availH / (state.room.l + 2 * outM));
     baseScale = fit * state.zoom;
   }
 
@@ -267,9 +272,10 @@
     const pad = 9;                 // grab margin perpendicular to a window
     let x, y, w, h;
     if (o.kind === "door") {
-      const depth = o.width * s;   // swing reaches one door-width into the room
-      if (g.horiz) { x = g.a; w = g.len; y = g.ny > 0 ? g.y : g.y - depth; h = depth; }
-      else         { y = g.a; h = g.len; x = g.nx > 0 ? g.x : g.x - depth; w = depth; }
+      const depth = o.width * s;   // swing reaches one door-width off the wall
+      const dir = o.out ? -1 : 1;
+      if (g.horiz) { const sy = g.ny * dir; x = g.a; w = g.len; y = sy > 0 ? g.y : g.y - depth; h = depth; }
+      else         { const sx = g.nx * dir; y = g.a; h = g.len; x = sx > 0 ? g.x : g.x - depth; w = depth; }
     } else {
       if (g.horiz) { x = g.a; w = g.len; y = g.y - pad; h = pad * 2; }
       else         { y = g.a; h = g.len; x = g.x - pad; w = pad * 2; }
@@ -298,17 +304,19 @@
               +  `<line class="win-line" x1="${g.x}" y1="${g.a}" x2="${g.x}" y2="${g.b}" />`;
         }
       } else {
-        // Door: hinge H, opposite jamb J, open leaf tip L (perpendicular into room)
+        // Door: hinge H, opposite jamb J, open leaf tip L perpendicular to the
+        // wall. dir = +1 swings into the room, -1 swings outward.
         const r = o.width * s;
+        const dir = o.out ? -1 : 1;
         let H, J, L;
         if (g.horiz) {
           const p1 = [g.a, g.y], p2 = [g.b, g.y];
           H = o.flip ? p2 : p1; J = o.flip ? p1 : p2;
-          L = [H[0], g.y + g.ny * r];
+          L = [H[0], g.y + g.ny * dir * r];
         } else {
           const p1 = [g.x, g.a], p2 = [g.x, g.b];
           H = o.flip ? p2 : p1; J = o.flip ? p1 : p2;
-          L = [g.x + g.nx * r, H[1]];
+          L = [g.x + g.nx * dir * r, H[1]];
         }
         const cross = (J[0] - H[0]) * (L[1] - H[1]) - (J[1] - H[1]) * (L[0] - H[0]);
         const sweep = cross < 0 ? 1 : 0;
@@ -419,6 +427,7 @@
     door: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 21h16M7 21V4h8v17M13 12v.01"/><path d="M15 4a5 5 0 0 1 5 5v12" stroke-opacity="0.5"/></svg>`,
     window: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M12 4v16M4 12h16"/></svg>`,
     flip: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg>`,
+    swing: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 3v18"/><path d="M7 8a10 10 0 0 1 10 10"/><path d="M17 14v4h-4"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13h10l1-13"/></svg>`,
   };
 
@@ -430,19 +439,21 @@
       li.className = "opening-item" + (o.id === selectedId ? " selected" : "");
       li.dataset.id = o.id;
       const wallName = o.wall.charAt(0).toUpperCase() + o.wall.slice(1);
-      const flipBtn = o.kind === "door"
-        ? `<button class="mini-btn act-flip" title="Flip hinge" aria-label="Flip hinge">${ICON.flip}</button>` : "";
+      const doorBtns = o.kind === "door"
+        ? `<button class="mini-btn act-swing${o.out ? " active" : ""}" title="${o.out ? "Swinging outward — click for inward" : "Swinging inward — click for outward"}" aria-label="Toggle swing direction">${ICON.swing}</button>`
+          + `<button class="mini-btn act-flip" title="Flip hinge" aria-label="Flip hinge">${ICON.flip}</button>`
+        : "";
       li.innerHTML = `
         <span class="op-icon">${ICON[o.kind]}</span>
         <div class="op-main">
-          <div class="op-kind">${o.kind === "door" ? "Door" : "Window"} <span class="op-wall">· ${wallName} wall</span></div>
+          <div class="op-kind">${o.kind === "door" ? "Door" : "Window"} <span class="op-wall">· ${wallName} wall${o.kind === "door" && o.out ? " · out" : ""}</span></div>
           <div class="op-dims">
             <input type="number" class="op-w mono" min="0.1" step="any" value="${fmt(o.width)}" aria-label="Width" />
             <span>${unitLabel()} wide</span>
           </div>
         </div>
         <div class="op-actions">
-          ${flipBtn}
+          ${doorBtns}
           <button class="mini-btn danger act-opdel" title="Remove" aria-label="Remove">${ICON.trash}</button>
         </div>`;
       li.querySelector(".op-w").addEventListener("change", (e) => {
@@ -451,6 +462,8 @@
       });
       const flip = li.querySelector(".act-flip");
       if (flip) flip.addEventListener("click", () => flipOpening(o));
+      const swing = li.querySelector(".act-swing");
+      if (swing) swing.addEventListener("click", () => toggleSwing(o));
       li.querySelector(".act-opdel").addEventListener("click", () => removeOpening(o.id));
       li.addEventListener("click", (e) => {
         if (e.target.closest("button, input")) return;
@@ -509,7 +522,7 @@
   /* ================= Opening operations ================= */
   function addOpening(kind) {
     const width = kind === "door" ? DOOR_W_M : WINDOW_W_M;
-    const o = { id: uid(), kind, wall: "top", width, pos: 0, flip: false };
+    const o = { id: uid(), kind, wall: "top", width, pos: 0, flip: false, out: false };
     o.pos = Math.max(0, state.room.w / 2 - width / 2);   // centered on the top wall
     clampOpening(o);
     state.openings.push(o);
@@ -518,6 +531,7 @@
     return o;
   }
   function flipOpening(o) { o.flip = !o.flip; save(); render(); }
+  function toggleSwing(o) { o.out = !o.out; save(); render(); }
   function removeOpening(id) {
     state.openings = state.openings.filter((o) => o.id !== id);
     if (selectedId === id) selectedId = null;
@@ -723,6 +737,7 @@
       } else if (o) {
         if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeOpening(o.id); }
         else if ((e.key === "f" || e.key === "F") && o.kind === "door") { flipOpening(o); }
+        else if ((e.key === "o" || e.key === "O") && o.kind === "door") { toggleSwing(o); }
         else if (e.key === "ArrowLeft" || e.key === "ArrowUp")    { o.pos -= nudge; clampOpening(o); save(); render(); }
         else if (e.key === "ArrowRight" || e.key === "ArrowDown") { o.pos += nudge; clampOpening(o); save(); render(); }
         else return;
