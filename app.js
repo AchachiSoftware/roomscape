@@ -1,5 +1,5 @@
 /* ============================================================
-   Room Planner — app logic
+   RoomScape — app logic
    Geometry is stored internally in METERS so units are just a
    display concern. The floor renders at a scale (px per meter)
    computed to fit the room in the stage, times a zoom factor.
@@ -8,7 +8,10 @@
 (() => {
   "use strict";
 
-  const STORE_KEY = "room-planner:v1";
+  const STORE_KEY = "roomscape:v1";
+  const THEME_KEY = "roomscape:theme";
+  const LEGACY_STORE_KEY = "room-planner:v1";   // pre-RoomScape name
+  const LEGACY_THEME_KEY = "room-planner:theme";
   const M_PER_FT = 0.3048;
 
   /* ---- Supported display units. Geometry is always meters internally. ----
@@ -104,7 +107,15 @@
   }
   function load() {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
+      let raw = localStorage.getItem(STORE_KEY);
+      if (!raw) {
+        // Migrate a layout saved under the old "room-planner" key.
+        raw = localStorage.getItem(LEGACY_STORE_KEY);
+        if (raw) {
+          localStorage.setItem(STORE_KEY, raw);
+          localStorage.removeItem(LEGACY_STORE_KEY);
+        }
+      }
       if (!raw) return null;
       const s = JSON.parse(raw);
       if (!s || !s.room || !Array.isArray(s.pieces)) return null;
@@ -707,7 +718,7 @@
         : matchMedia("(prefers-color-scheme: dark)").matches;
       const next = isDark ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", next);
-      try { localStorage.setItem("room-planner:theme", next); } catch (_) {}
+      try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
       render();
     });
 
@@ -763,7 +774,8 @@
   /* ================= Init ================= */
   function initTheme() {
     try {
-      const t = localStorage.getItem("room-planner:theme");
+      const t = localStorage.getItem(THEME_KEY)
+        || localStorage.getItem(LEGACY_THEME_KEY);
       if (t) document.documentElement.setAttribute("data-theme", t);
     } catch (_) {}
   }

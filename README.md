@@ -1,9 +1,9 @@
-# Room Planner
+# RoomScape
 
 A small, self-contained web app for mapping out a room or wall and dragging
 scaled furniture around to see how it fits — built for planning a new apartment.
 
-![Room Planner](docs/preview.png)
+![RoomScape](docs/preview.png)
 
 ## Features
 
@@ -47,7 +47,7 @@ Or just open `index.html` directly in a browser.
 ## Project layout
 
 ```
-room-planner/
+roomscape/
 ├── index.html   # markup + structure
 ├── styles.css   # design tokens, both themes, all styling
 ├── app.js       # state, rendering, drag/units/persistence
