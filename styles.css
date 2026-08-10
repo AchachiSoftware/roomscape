@@ -151,24 +151,45 @@ body {
 :root[data-theme="light"] .i-sun { display: block; }
 :root[data-theme="light"] .i-moon { display: none; }
 
-/* ---------- Layout ---------- */
+/* ---------- Layout ----------
+   Setup lives on the left rail, the placed-pieces list on the right,
+   so neither one crowds the other out of the viewport. */
 .layout {
   flex: 1 1 auto; min-height: 0;
-  display: grid; grid-template-columns: 320px 1fr;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 320px;
+  grid-template-areas: "left stage right";
 }
 
-/* ---------- Rail ---------- */
+/* ---------- Rails ---------- */
 .rail {
-  border-right: 1px solid var(--line);
   background: var(--surface);
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex; flex-direction: column;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
 }
+.rail::-webkit-scrollbar { width: 10px; }
+.rail::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 999px;
+  border: 3px solid var(--surface); background-clip: padding-box;
+}
+.rail::-webkit-scrollbar-track { background: transparent; }
+
+.rail-left { grid-area: left; border-right: 1px solid var(--line); }
+.rail-right { grid-area: right; border-left: 1px solid var(--line); overflow: hidden; }
+
 .panel {
   padding: 18px 20px;
   border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;   /* panels keep their natural height; the rail scrolls instead */
 }
+.rail-left > .panel:last-child { border-bottom: 0; }
 .panel-grow { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+/* The pieces panel owns the full right rail and scrolls its own list */
+.rail-right .panel-grow { border-bottom: 0; }
 .panel-title {
   margin: 0 0 14px;
   font-size: 11px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
@@ -257,7 +278,21 @@ input:focus-visible {
 .text-btn { padding: 4px 10px; border-radius: 6px; }
 
 /* Piece list */
-.piece-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.piece-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+}
+/* Empty list must not claim the rail's height, or the hint drifts to the bottom */
+.piece-list:empty { flex: 0 0 auto; }
+.piece-list:not(:empty) { padding-right: 4px; }
+.piece-list::-webkit-scrollbar { width: 8px; }
+.piece-list::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 999px;
+  border: 2px solid var(--surface); background-clip: padding-box;
+}
+.piece-list::-webkit-scrollbar-track { background: transparent; }
 .piece-item {
   border: 1px solid var(--line); border-radius: 10px; padding: 10px;
   background: var(--surface-2);
@@ -302,6 +337,7 @@ input:focus-visible {
 
 /* ---------- Stage ---------- */
 .stage-wrap {
+  grid-area: stage;
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
   background:
     radial-gradient(circle at 1px 1px, var(--line-soft) 1px, transparent 0) 0 0 / 22px 22px;
@@ -404,10 +440,35 @@ input:focus-visible {
 .stage-hint { flex: 0 0 auto; text-align: center; color: var(--faint); font-size: 12px; padding: 8px 12px 12px; margin: 0; }
 
 /* ---------- Responsive ---------- */
+
+/* Not enough width for three columns — stack the two rails in one column,
+   each scrolling on its own. */
+@media (max-width: 1150px) {
+  .layout {
+    grid-template-columns: 320px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "left  stage"
+      "right stage";
+  }
+  .rail-right { border-left: 0; border-right: 1px solid var(--line); border-top: 1px solid var(--line); }
+}
+
 @media (max-width: 820px) {
   body { overflow: auto; }
-  .layout { grid-template-columns: 1fr; }
-  .rail { border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-template-areas: "left" "stage" "right";
+  }
+  .rail {
+    border-right: 0; border-left: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: none; overflow: visible;
+  }
+  .rail-right { border-top: 1px solid var(--line); border-bottom: 0; overflow: visible; }
+  .rail-right .panel-grow { min-height: 0; }
+  .piece-list { overflow-y: visible; max-height: none; }
   .stage-wrap { min-height: 70vh; }
 }
 

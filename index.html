@@ -40,7 +40,7 @@
   </header>
 
   <main class="layout">
-    <aside class="rail">
+    <aside class="rail rail-left">
       <!-- Room -->
       <section class="panel">
         <h2 class="panel-title">Room / wall</h2>
@@ -100,15 +100,6 @@
         <ul id="openingList" class="opening-list"></ul>
         <p id="emptyOpenings" class="empty-hint">No doors or windows yet. Add one, then drag it onto any wall.</p>
       </section>
-
-      <!-- Pieces list -->
-      <section class="panel panel-grow">
-        <h2 class="panel-title">Pieces
-          <button type="button" id="clearAll" class="link-btn" hidden>Clear all</button>
-        </h2>
-        <ul id="pieceList" class="piece-list"></ul>
-        <p id="emptyPieces" class="empty-hint">Nothing placed yet. Add a piece above or tap a preset to start laying out the room.</p>
-      </section>
     </aside>
 
     <section class="stage-wrap">
@@ -134,6 +125,17 @@
       </div>
       <p class="stage-hint">Drag pieces to arrange · select one to rotate, duplicate or remove · everything saves automatically</p>
     </section>
+
+    <aside class="rail rail-right">
+      <!-- Placed pieces -->
+      <section class="panel panel-grow">
+        <h2 class="panel-title">Placed pieces
+          <button type="button" id="clearAll" class="link-btn" hidden>Clear all</button>
+        </h2>
+        <ul id="pieceList" class="piece-list"></ul>
+        <p id="emptyPieces" class="empty-hint">Nothing placed yet. Add a piece on the left or tap a preset to start laying out the room.</p>
+      </section>
+    </aside>
   </main>
 
   <script src="app.js"></script>
