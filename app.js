@@ -89,8 +89,8 @@
     snap: true,
     zoom: 1,
     colorSeed: 0,
-    pieces: [],     // { id, type:'furniture'|'closet', label, w, d, rot, color, x, y }
-    openings: [],   // { id, kind:'door'|'window', edge, pos(m), width(m), flip, out }
+    pieces: [],     // { id, type:'furniture'|'closet', label, w, d, rot, color, x, y, locked }
+    openings: [],   // { id, kind:'door'|'window', edge, pos(m), width(m), flip, out, locked }
   });
 
   let state = load() || defaultState();
@@ -174,6 +174,7 @@
     for (const p of s.pieces) {
       if (p.type !== "closet") p.type = "furniture";
       if (typeof p.rot !== "number") p.rot = 0;
+      p.locked = !!p.locked;
     }
     // Openings used to name a wall; they now index a polygon edge. On a
     // rectangle those edges run top, right, bottom, left.
@@ -181,7 +182,7 @@
     for (const o of s.openings) {
       if (typeof o.edge !== "number") o.edge = WALL_EDGE[o.wall] ?? 0;
       delete o.wall;
-      o.flip = !!o.flip; o.out = !!o.out;
+      o.flip = !!o.flip; o.out = !!o.out; o.locked = !!o.locked;
     }
     return s;
   }
@@ -509,24 +510,34 @@
     return node;
   }
 
-  /* Hit boxes are laid out in the wall's own frame — local +x runs along the
-     wall, local +y points into the room — then rotated into place. */
+  /* Hit boxes cover exactly what the opening draws: a door's swing fills a
+     square one door-width deep on the swing side of the wall, a window is a
+     thin band straddling it.
+
+     The box is anchored on the graphic's CENTER, not a corner. An element
+     rotates about its own center, so a corner anchor only lands correctly on a
+     wall that happens to run left-to-right — on every other wall the box swings
+     a full door-width away from the door it is supposed to catch. */
   function positionOpeningHit(node, o, s) {
     const g = openingPx(o, s);
-    let depth, y0;
+    const w = Math.max(6, g.len);
+    let depth, off;                              // off: center offset along the inward normal
     if (o.kind === "door") {
-      depth = o.width * s;                       // swing reaches one door-width off the wall
-      y0 = o.out ? -depth : 0;
+      depth = Math.max(6, o.width * s);          // swing reaches one door-width off the wall
+      off = (o.out ? -1 : 1) * depth / 2;        // sits wholly on the side it swings toward
     } else {
       depth = 18;                                // grab margin either side of a window
-      y0 = -depth / 2;
+      off = 0;
     }
-    node.style.width = Math.max(6, g.len) + "px";
-    node.style.height = Math.max(6, depth) + "px";
+    const cx = (g.A[0] + g.B[0]) / 2 + g.nx * off;
+    const cy = (g.A[1] + g.B[1]) / 2 + g.ny * off;
+    node.style.width = w + "px";
+    node.style.height = depth + "px";
     node.style.transform =
-      `translate(${round2(g.A[0])}px, ${round2(g.A[1])}px) ` +
-      `rotate(${round2((g.ang * 180) / Math.PI)}deg) translate(0, ${round2(y0)}px)`;
+      `translate(${round2(cx - w / 2)}px, ${round2(cy - depth / 2)}px) ` +
+      `rotate(${round2((g.ang * 180) / Math.PI)}deg)`;
     node.classList.toggle("selected", o.id === selectedId);
+    node.classList.toggle("locked", !!o.locked);
   }
 
   /* Paint all door/window graphics into the shared SVG overlay. */
@@ -594,6 +605,7 @@
     node.dataset.id = p.id;
     node.innerHTML =
       `<span class="c-rod" hidden></span><span class="c-doors" hidden></span>` +
+      `<span class="p-lock" hidden aria-hidden="true">${ICON.lockSm}</span>` +
       `<span class="p-label"></span><span class="p-dim mono"></span>`;
     node.addEventListener("pointerdown", (e) => startDrag(e, p, node));
     els.floor.appendChild(node);
@@ -611,6 +623,8 @@
     node.classList.toggle("selected", p.id === selectedId);
     node.classList.toggle("tiny", Math.min(w, h) < 48);
     node.classList.toggle("closet", p.type === "closet");
+    node.classList.toggle("locked", !!p.locked);
+    node.querySelector(".p-lock").hidden = !p.locked;
     const out = pieceOutside(p);
     node.classList.toggle("outside", out);
     node.title = out ? "This piece sticks outside the room outline" : "";
@@ -674,8 +688,14 @@
     // Shown front-most first, like a layers panel — the reverse of paint order.
     for (const p of state.pieces.slice().reverse()) {
       const li = document.createElement("li");
-      li.className = "piece-item" + (p.id === selectedId ? " selected" : "");
+      li.className = "piece-item" + (p.id === selectedId ? " selected" : "")
+                                  + (p.locked ? " locked" : "");
       li.dataset.id = p.id;
+      const lockBtn =
+        `<button class="mini-btn act-lock${p.locked ? " active" : ""}" title="${
+          p.locked ? "Locked — click to unlock (L)" : "Lock in place so clicks pass through it (L)"
+        }" aria-pressed="${p.locked}" aria-label="${p.locked ? "Unlock" : "Lock"} ${escapeAttr(p.label)}">${
+          p.locked ? ICON.lock : ICON.unlock}</button>`;
       li.innerHTML = `
         <button type="button" class="drag-handle" title="Drag to reorder, or use the arrow keys. With a piece selected: [ and ] to step, { and } to send fully back or front." aria-label="Reorder ${escapeAttr(p.label)}">${ICON.grip}</button>
         <input type="color" class="swatch" value="${p.color}" title="Change color" aria-label="Color for ${escapeAttr(p.label)}" />
@@ -692,15 +712,10 @@
           </div>
         </div>
         <div class="piece-actions">
-          <button class="mini-btn act-rotate" title="${p.type === "closet" ? "Rotate 90° — moves the doors to the next side" : "Rotate 90°"}" aria-label="Rotate">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/></svg>
-          </button>
-          <button class="mini-btn act-dupe" title="Duplicate" aria-label="Duplicate">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
-          </button>
-          <button class="mini-btn danger act-del" title="Remove" aria-label="Remove">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13h10l1-13"/></svg>
-          </button>
+          ${lockBtn}
+          <button class="mini-btn act-rotate" title="${p.type === "closet" ? "Rotate 90° — moves the doors to the next side (R)" : "Rotate 90° (R)"}" aria-label="Rotate"${p.locked ? " disabled" : ""}>${ICON.rotate}</button>
+          <button class="mini-btn act-dupe" title="Duplicate (D)" aria-label="Duplicate">${ICON.copy}</button>
+          <button class="mini-btn danger act-del" title="Remove" aria-label="Remove"${p.locked ? " disabled" : ""}>${ICON.trash}</button>
         </div>`;
 
       li.querySelector(".swatch").addEventListener("input", (e) => {
@@ -735,6 +750,7 @@
             ?.focus();
         }
       });
+      li.querySelector(".act-lock").addEventListener("click", () => toggleLock(p));
       li.querySelector(".act-rotate").addEventListener("click", () => rotatePiece(p));
       li.querySelector(".act-dupe").addEventListener("click", () => duplicatePiece(p));
       li.querySelector(".act-del").addEventListener("click", () => removePiece(p.id));
@@ -756,6 +772,11 @@
     flip: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg>`,
     swing: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 3v18"/><path d="M7 8a10 10 0 0 1 10 10"/><path d="M17 14v4h-4"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13h10l1-13"/></svg>`,
+    copy: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
+    // Closed shackle = locked, open shackle = the click that will lock it.
+    lock: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>`,
+    unlock: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.6-1.6"/></svg>`,
+    lockSm: `<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>`,
   };
 
   function renderOpeningList() {
@@ -763,15 +784,22 @@
     els.emptyOpenings.style.display = state.openings.length ? "none" : "block";
     for (const o of state.openings) {
       const li = document.createElement("li");
-      li.className = "opening-item" + (o.id === selectedId ? " selected" : "");
+      li.className = "opening-item" + (o.id === selectedId ? " selected" : "")
+                                    + (o.locked ? " locked" : "");
       li.dataset.id = o.id;
       const wallName = R.names[o.edge] || "wall";
       const swing = o.kind === "door" && o.out ? " · out" : "";   // "in" is the default, so it goes unsaid
+      const dis = o.locked ? " disabled" : "";
       const doorBtns = o.kind === "door"
-        ? `<button class="mini-btn act-rot" title="Rotate — steps through all four hinge / swing positions (R)" aria-label="Rotate door">${ICON.rotate}</button>`
-          + `<button class="mini-btn act-flip" title="Flip the hinge to the other jamb (F)" aria-label="Flip hinge">${ICON.flip}</button>`
-          + `<button class="mini-btn act-swing${o.out ? " active" : ""}" title="${o.out ? "Swinging outward — click for inward (O)" : "Swinging inward — click for outward (O)"}" aria-label="Toggle swing direction">${ICON.swing}</button>`
+        ? `<button class="mini-btn act-rot" title="Rotate — steps through all four hinge / swing positions (R)" aria-label="Rotate door"${dis}>${ICON.rotate}</button>`
+          + `<button class="mini-btn act-flip" title="Flip the hinge to the other jamb (F)" aria-label="Flip hinge"${dis}>${ICON.flip}</button>`
+          + `<button class="mini-btn act-swing${o.out ? " active" : ""}" title="${o.out ? "Swinging outward — click for inward (O)" : "Swinging inward — click for outward (O)"}" aria-label="Toggle swing direction"${dis}>${ICON.swing}</button>`
         : "";
+      const lockBtn =
+        `<button class="mini-btn act-oplock${o.locked ? " active" : ""}" title="${
+          o.locked ? "Locked — click to unlock (L)" : "Lock to this wall so clicks pass through it (L)"
+        }" aria-pressed="${o.locked}" aria-label="${o.locked ? "Unlock" : "Lock"} ${o.kind}">${
+          o.locked ? ICON.lock : ICON.unlock}</button>`;
       li.innerHTML = `
         <span class="op-icon">${ICON[o.kind]}</span>
         <div class="op-main">
@@ -782,13 +810,15 @@
           </div>
         </div>
         <div class="op-actions">
+          ${lockBtn}
           ${doorBtns}
-          <button class="mini-btn danger act-opdel" title="Remove" aria-label="Remove">${ICON.trash}</button>
+          <button class="mini-btn danger act-opdel" title="Remove" aria-label="Remove"${dis}>${ICON.trash}</button>
         </div>`;
       li.querySelector(".op-w").addEventListener("change", (e) => {
         o.width = Math.max(0.05, toMeters(parseFloat(e.target.value) || 0));
         clampOpening(o); save(); render();
       });
+      li.querySelector(".act-oplock").addEventListener("click", () => toggleLock(o));
       li.querySelector(".act-rot")?.addEventListener("click", () => rotateOpening(o));
       li.querySelector(".act-flip")?.addEventListener("click", () => flipOpening(o));
       li.querySelector(".act-swing")?.addEventListener("click", () => toggleSwing(o));
@@ -832,6 +862,7 @@
       w, d, rot: 0, color: kind === "closet" ? CLOSET_COLOR : nextColor(),
       x: snapVal(Math.min(off, Math.max(0, R.w - w))),
       y: snapVal(Math.min(off, Math.max(0, R.l - d))),
+      locked: false,
     };
     clampPiece(p);
     state.pieces.push(p);
@@ -840,11 +871,20 @@
     return p;
   }
   function rotatePiece(p) {
+    if (p.locked) return;
     p.rot = (p.rot + 90) % 360;
     clampPiece(p); save(); render();
   }
+  /* Locking takes a piece or an opening out of play on the plan: clicks fall
+     straight through to whatever sits behind it, and nothing can move, rotate
+     or delete it until it is unlocked. It stays selectable from the rails. */
+  function toggleLock(item) {
+    item.locked = !item.locked;
+    save(); render();
+  }
   function duplicatePiece(src) {
-    const p = { ...src, id: uid(), label: src.label,
+    // The copy is the one you are about to place, so it never inherits the lock.
+    const p = { ...src, id: uid(), label: src.label, locked: false,
       x: src.x + toMeters(unitStep()) * 2, y: src.y + toMeters(unitStep()) * 2 };
     clampPiece(p);
     state.pieces.push(p);
@@ -864,7 +904,9 @@
     return true;
   }
   function removePiece(id) {
-    state.pieces = state.pieces.filter((p) => p.id !== id);
+    const p = state.pieces.find((x) => x.id === id);
+    if (!p || p.locked) return;
+    state.pieces = state.pieces.filter((x) => x.id !== id);
     if (selectedId === id) selectedId = null;
     save(); render();
   }
@@ -876,7 +918,7 @@
   /* ================= Opening operations ================= */
   function addOpening(kind) {
     const width = kind === "door" ? DOOR_W_M : WINDOW_W_M;
-    const o = { id: uid(), kind, edge: 0, width, pos: 0, flip: false, out: false };
+    const o = { id: uid(), kind, edge: 0, width, pos: 0, flip: false, out: false, locked: false };
     const e = R.edges[0];
     o.width = Math.min(width, e.len);
     o.pos = Math.max(0, e.len / 2 - o.width / 2);       // centered on the first wall
@@ -889,16 +931,18 @@
   /* Step through every orientation a wall door can take: hinge left/right
      crossed with swinging in/out. */
   function rotateOpening(o) {
-    if (o.kind !== "door") return;
+    if (o.kind !== "door" || o.locked) return;
     const i = DOOR_STATES.findIndex((d) => d.flip === !!o.flip && d.out === !!o.out);
     const next = DOOR_STATES[(i + 1) % DOOR_STATES.length];
     o.flip = next.flip; o.out = next.out;
     save(); render();
   }
-  function flipOpening(o) { o.flip = !o.flip; save(); render(); }
-  function toggleSwing(o) { o.out = !o.out; save(); render(); }
+  function flipOpening(o) { if (o.locked) return; o.flip = !o.flip; save(); render(); }
+  function toggleSwing(o) { if (o.locked) return; o.out = !o.out; save(); render(); }
   function removeOpening(id) {
-    state.openings = state.openings.filter((o) => o.id !== id);
+    const o = state.openings.find((x) => x.id === id);
+    if (!o || o.locked) return;
+    state.openings = state.openings.filter((x) => x.id !== id);
     if (selectedId === id) selectedId = null;
     save(); render();
   }
@@ -938,6 +982,7 @@
   let drag = null;
   function startDrag(e, p, node) {
     if (e.button != null && e.button !== 0) return;
+    if (p.locked) return;          // CSS already lets the click through; belt and braces
     e.preventDefault();
     select(p.id);
     if (selectedId !== p.id) selectedId = p.id; // ensure selected after toggle
@@ -1044,6 +1089,7 @@
   let odrag = null;
   function startDragOpening(e, o, node) {
     if (e.button != null && e.button !== 0) return;
+    if (o.locked) return;
     e.preventDefault();
     e.stopPropagation();
     selectedId = o.id;
@@ -1205,8 +1251,17 @@
 
     els.clearAll.addEventListener("click", () => {
       if (!state.pieces.length) return;
-      if (confirm("Remove all pieces from the room?")) {
-        state.pieces = []; selectedId = null; save(); render();
+      // Locked pieces survive a clear — that protection is the point of the lock.
+      const kept = state.pieces.filter((p) => p.locked);
+      if (kept.length === state.pieces.length) {
+        alert("Every piece is locked. Unlock the ones you want to remove first.");
+        return;
+      }
+      const msg = kept.length
+        ? `Remove all unlocked pieces? ${kept.length} locked ${kept.length === 1 ? "piece stays" : "pieces stay"}.`
+        : "Remove all pieces from the room?";
+      if (confirm(msg)) {
+        state.pieces = kept; selectedId = null; save(); render();
       }
     });
 
@@ -1249,40 +1304,57 @@
       }
     });
 
-    // Keyboard: delete selected, rotate/flip, nudge with arrows
+    /* Keyboard: everything acts on the current selection. Letters are the
+       initial of the verb (R)otate, (L)ock, (D)uplicate, (F)lip, sw(O)ng-out;
+       arrows nudge by one snap step, or ten with Shift held. Locked items only
+       answer to L and Escape. */
     document.addEventListener("keydown", (e) => {
-      if (!selectedId) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;   // leave browser shortcuts alone
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      const nudge = toMeters(unitStep());
+      if (e.key === "Escape") {
+        if (selectedId) { selectedId = null; render(); }
+        return;
+      }
+      if (!selectedId) return;
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      const del = key === "Delete" || key === "Backspace";
+      const nudge = toMeters(unitStep()) * (e.shiftKey ? 10 : 1);
       const p = state.pieces.find((x) => x.id === selectedId);
       const o = state.openings.find((x) => x.id === selectedId);
       const v = selectedId.startsWith("vtx:") ? parseInt(selectedId.slice(4), 10) : -1;
       if (p) {
-        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removePiece(p.id); }
-        else if (e.key === "r" || e.key === "R") { rotatePiece(p); }
-        else if (e.key === "]") { movePiece(p, 1); }
-        else if (e.key === "[") { movePiece(p, -1); }
-        else if (e.key === "}") { movePiece(p, state.pieces.length); }
-        else if (e.key === "{") { movePiece(p, -state.pieces.length); }
-        else if (e.key === "ArrowLeft")  { p.x -= nudge; clampPiece(p); save(); render(); }
-        else if (e.key === "ArrowRight") { p.x += nudge; clampPiece(p); save(); render(); }
-        else if (e.key === "ArrowUp")    { p.y -= nudge; clampPiece(p); save(); render(); }
-        else if (e.key === "ArrowDown")  { p.y += nudge; clampPiece(p); save(); render(); }
+        // "l" and duplicate stay live while locked; every mutation below is
+        // gated so a locked piece can't be nudged, spun or thrown away.
+        if (key === "l") { toggleLock(p); }
+        else if (key === "d") { duplicatePiece(p); }
+        else if (p.locked) return;
+        else if (del) { e.preventDefault(); removePiece(p.id); }
+        else if (key === "r") { rotatePiece(p); }
+        else if (key === "]") { movePiece(p, 1); }
+        else if (key === "[") { movePiece(p, -1); }
+        else if (key === "}") { movePiece(p, state.pieces.length); }
+        else if (key === "{") { movePiece(p, -state.pieces.length); }
+        else if (key === "ArrowLeft")  { p.x -= nudge; clampPiece(p); save(); render(); }
+        else if (key === "ArrowRight") { p.x += nudge; clampPiece(p); save(); render(); }
+        else if (key === "ArrowUp")    { p.y -= nudge; clampPiece(p); save(); render(); }
+        else if (key === "ArrowDown")  { p.y += nudge; clampPiece(p); save(); render(); }
         else return;
       } else if (o) {
-        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeOpening(o.id); }
-        else if ((e.key === "r" || e.key === "R") && o.kind === "door") { rotateOpening(o); }
-        else if ((e.key === "f" || e.key === "F") && o.kind === "door") { flipOpening(o); }
-        else if ((e.key === "o" || e.key === "O") && o.kind === "door") { toggleSwing(o); }
-        else if (e.key === "ArrowLeft" || e.key === "ArrowUp")    { o.pos -= nudge; clampOpening(o); save(); render(); }
-        else if (e.key === "ArrowRight" || e.key === "ArrowDown") { o.pos += nudge; clampOpening(o); save(); render(); }
+        if (key === "l") { toggleLock(o); }
+        else if (o.locked) return;
+        else if (del) { e.preventDefault(); removeOpening(o.id); }
+        else if (key === "r" && o.kind === "door") { rotateOpening(o); }
+        else if (key === "f" && o.kind === "door") { flipOpening(o); }
+        else if (key === "o" && o.kind === "door") { toggleSwing(o); }
+        else if (key === "ArrowLeft" || key === "ArrowUp")    { o.pos -= nudge; clampOpening(o); save(); render(); }
+        else if (key === "ArrowRight" || key === "ArrowDown") { o.pos += nudge; clampOpening(o); save(); render(); }
         else return;
       } else if (v >= 0) {
-        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeVertex(v); }
+        if (del) { e.preventDefault(); removeVertex(v); }
         else return;
       } else return;
-      if (e.key.startsWith("Arrow")) e.preventDefault();
+      if (key.startsWith("Arrow")) e.preventDefault();
     });
 
     // Re-fit on resize

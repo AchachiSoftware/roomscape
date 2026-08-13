@@ -174,7 +174,17 @@
           </div>
         </div>
       </div>
-      <p class="stage-hint">Drag pieces to arrange · select one to rotate, duplicate or remove · drag a door to any wall and press <span class="kbd">R</span> to spin it through all four hinge and swing positions · everything saves automatically</p>
+      <p class="stage-hint">Drag pieces to arrange · everything saves automatically</p>
+      <p class="stage-hint keys">With something selected:
+        <span class="kbd">R</span> rotate ·
+        <span class="kbd">L</span> lock ·
+        <span class="kbd">D</span> duplicate ·
+        <span class="kbd">F</span> flip a door's hinge ·
+        <span class="kbd">O</span> swing it out ·
+        <span class="kbd">←↑↓→</span> nudge (<span class="kbd">Shift</span> for ten steps) ·
+        <span class="kbd">[</span> <span class="kbd">]</span> restack ·
+        <span class="kbd">Del</span> remove ·
+        <span class="kbd">Esc</span> deselect</p>
     </section>
 
     <aside class="rail rail-right">
@@ -183,7 +193,7 @@
         <h2 class="panel-title">Placed pieces
           <button type="button" id="clearAll" class="link-btn" hidden>Clear all</button>
         </h2>
-        <p id="orderHint" class="list-hint" hidden>Drag <span aria-hidden="true">⠿</span> to reorder — the top of the list is on top.</p>
+        <p id="orderHint" class="list-hint" hidden>Drag <span aria-hidden="true">⠿</span> to reorder — the top of the list is on top. Lock a piece to click straight through it to whatever sits behind.</p>
         <ul id="pieceList" class="piece-list"></ul>
         <p id="emptyPieces" class="empty-hint">Nothing placed yet. Add a piece on the left or tap a preset to start laying out the room.</p>
       </section>

@@ -319,7 +319,12 @@ input:focus-visible {
   width: 46px; padding: 3px 4px; font-size: 12px; text-align: center;
   border-radius: 6px; background: var(--surface); border: 1px solid var(--line);
 }
-.op-actions { display: flex; gap: 3px; flex: 0 0 auto; }
+/* Three across, wrapping to a second row: a door carries five actions now and
+   a single row would squeeze the width field out of the rail. */
+.op-actions {
+  display: grid; grid-template-columns: repeat(3, auto);
+  gap: 3px; justify-content: end; flex: 0 0 auto;
+}
 .link-btn, .text-btn {
   border: 0; background: transparent; color: var(--accent);
   font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; padding: 0;
@@ -395,7 +400,8 @@ input:focus-visible {
   -webkit-appearance: none; margin: 0;
 }
 .piece-dims input, .op-dims input { appearance: textfield; -moz-appearance: textfield; }
-.piece-actions { display: flex; gap: 3px; }
+/* Two by two, so the four actions don't crowd the label and dimension fields */
+.piece-actions { display: grid; grid-template-columns: repeat(2, auto); gap: 3px; }
 .mini-btn {
   width: 26px; height: 26px; display: grid; place-items: center; flex: 0 0 auto;
   border: 1px solid var(--line); background: var(--surface); border-radius: 7px;
@@ -405,6 +411,10 @@ input:focus-visible {
 .mini-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
 .mini-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 :root[data-theme="dark"] .mini-btn.active { background: rgba(95,182,196,0.14); }
+/* Actions a lock rules out are dimmed rather than hidden, so the row keeps its
+   shape and it stays obvious what unlocking would give back. */
+.mini-btn:disabled { opacity: 0.34; cursor: not-allowed; }
+.mini-btn:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 .empty-hint { color: var(--faint); font-size: 13px; line-height: 1.5; margin: 4px 0 0; }
 .list-hint { color: var(--faint); font-size: 12px; line-height: 1.4; margin: -8px 0 12px; }
@@ -506,10 +516,14 @@ input:focus-visible {
 .opening-hit {
   position: absolute; top: 0; left: 0; z-index: 1;
   cursor: grab; touch-action: none; border-radius: 3px;
+  /* Placed by its center and spun about that center, so it stays on top of the
+     door graphic whichever direction the wall runs. */
+  transform-origin: 50% 50%;
 }
 .opening-hit:hover { background: rgba(53, 112, 126, 0.10); }
 .opening-hit.selected { outline: 2px solid var(--accent); outline-offset: 1px; background: rgba(53, 112, 126, 0.12); }
 .opening-hit.dragging { cursor: grabbing; }
+.opening-hit.locked { pointer-events: none; }
 
 /* Furniture */
 .piece {
@@ -552,10 +566,28 @@ input:focus-visible {
 /* A piece that no longer fits inside a reshaped outline */
 .piece.outside { outline: 2px dashed var(--danger); outline-offset: -2px; }
 
+/* Locked: the whole point is that the pointer goes straight through to
+   whatever is behind, so the piece under a big rug or closet is the one you
+   actually grab. A corner padlock says why nothing happened on click. */
+.piece.locked { pointer-events: none; }
+.piece.locked .p-label, .piece.locked .p-dim { opacity: 0.72; }
+.piece .p-lock {
+  position: absolute; top: 2px; right: 3px;
+  display: grid; place-items: center; opacity: 0.8; pointer-events: none;
+}
+.piece .p-lock[hidden] { display: none; }   /* display:grid would beat the default */
+.piece.tiny .p-lock { top: 1px; right: 1px; transform: scale(0.8); transform-origin: top right; }
+
+/* Locked rows read a shade quieter than the rest of the rail */
+.piece-item.locked .piece-label-input, .opening-item.locked .op-kind { opacity: 0.7; }
+
 /* Marks a closet row in the piece list — an icon, since the rail is narrow */
 .p-tag { flex: 0 0 auto; display: grid; place-items: center; color: var(--faint); }
 
 .stage-hint { flex: 0 0 auto; text-align: center; color: var(--faint); font-size: 12px; padding: 8px 12px 12px; margin: 0; }
+/* The shortcut legend sits under the one-line hint, so it loses that gap */
+.stage-hint + .stage-hint.keys { padding-top: 0; }
+.stage-hint.keys { line-height: 2.1; }
 
 /* ---------- Responsive ---------- */
 
