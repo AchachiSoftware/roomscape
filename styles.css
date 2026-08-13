@@ -222,6 +222,55 @@ input:focus-visible {
 .unit-suffix { color: var(--muted); font-size: 13px; padding-bottom: 9px; white-space: nowrap; }
 
 .room-meta { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+.sub-label {
+  margin: 14px 0 6px; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.03em; color: var(--muted);
+}
+
+/* Segmented pickers (room shape, piece type) */
+.seg-toggle {
+  display: flex; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 9px; padding: 3px;
+  margin-bottom: 14px; gap: 2px;
+}
+.seg-toggle button {
+  flex: 1 1 0; min-width: 0;
+  border: 0; background: transparent; color: var(--muted);
+  font: inherit; font-size: 12px; font-weight: 600;
+  padding: 6px 4px; border-radius: 6px; cursor: pointer;
+}
+.seg-toggle button:hover { color: var(--accent); }
+.seg-toggle button.is-active {
+  background: var(--accent); color: #fff; box-shadow: var(--shadow-sm);
+}
+:root[data-theme="dark"] .seg-toggle button.is-active { color: var(--surface-2); }
+
+/* Which corner of the rectangle gets cut away for an L-shaped room */
+.corner-pick {
+  display: grid; grid-template-columns: repeat(4, 34px); gap: 6px; margin-bottom: 12px;
+}
+.corner-pick button {
+  height: 34px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--faint);
+  line-height: 0; display: grid; place-items: center;
+}
+.corner-pick svg { fill: currentColor; }
+.corner-pick button:hover { border-color: var(--accent); color: var(--accent); }
+.corner-pick button.is-active {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-wash);
+}
+:root[data-theme="dark"] .corner-pick button.is-active { background: rgba(95,182,196,0.14); }
+
+.custom-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 12px;
+}
+.hint-count { font-size: 12px; color: var(--faint); }
+.kbd {
+  display: inline-block; padding: 0 4px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--surface-2);
+  font-family: "JetBrains Mono", monospace; font-size: 0.9em; color: var(--muted);
+}
 
 /* Presets */
 .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
@@ -257,7 +306,7 @@ input:focus-visible {
 .opening-item {
   border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px;
   background: var(--surface-2);
-  display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+  display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center;
 }
 .opening-item.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
 :root[data-theme="dark"] .opening-item.selected { box-shadow: 0 0 0 2px rgba(95,182,196,0.22); }
@@ -265,12 +314,12 @@ input:focus-visible {
 .op-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .op-kind { font-weight: 600; font-size: 13px; }
 .op-wall { color: var(--muted); font-weight: 500; }
-.op-dims { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+.op-dims { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
 .op-dims input {
-  width: 52px; padding: 3px 5px; font-size: 12px; text-align: center;
+  width: 46px; padding: 3px 4px; font-size: 12px; text-align: center;
   border-radius: 6px; background: var(--surface); border: 1px solid var(--line);
 }
-.op-actions { display: flex; gap: 4px; }
+.op-actions { display: flex; gap: 3px; flex: 0 0 auto; }
 .link-btn, .text-btn {
   border: 0; background: transparent; color: var(--accent);
   font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; padding: 0;
@@ -296,7 +345,7 @@ input:focus-visible {
 .piece-item {
   border: 1px solid var(--line); border-radius: 10px; padding: 10px;
   background: var(--surface-2);
-  display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center;
+  display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: center;
 }
 /* Reorder grip — list order is paint order, top of the list draws on top */
 .drag-handle {
@@ -333,14 +382,22 @@ input:focus-visible {
   font-family: "Hanken Grotesk", sans-serif;
 }
 .piece-label-input:focus-visible { outline: none; box-shadow: none; border-bottom: 1px solid var(--accent); }
-.piece-dims { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+.piece-label-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.piece-label-row .piece-label-input { flex: 1 1 auto; min-width: 0; }
+.piece-dims { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
 .piece-dims input {
-  width: 46px; padding: 3px 5px; font-size: 12px; text-align: center;
+  width: 44px; padding: 3px 4px; font-size: 12px; text-align: center;
   border-radius: 6px; background: var(--surface); border: 1px solid var(--line);
 }
-.piece-actions { display: flex; gap: 4px; }
+/* Spin buttons eat the width these narrow rail inputs need for their digits */
+.piece-dims input::-webkit-outer-spin-button, .piece-dims input::-webkit-inner-spin-button,
+.op-dims input::-webkit-outer-spin-button, .op-dims input::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.piece-dims input, .op-dims input { appearance: textfield; -moz-appearance: textfield; }
+.piece-actions { display: flex; gap: 3px; }
 .mini-btn {
-  width: 28px; height: 28px; display: grid; place-items: center;
+  width: 26px; height: 26px; display: grid; place-items: center; flex: 0 0 auto;
   border: 1px solid var(--line); background: var(--surface); border-radius: 7px;
   cursor: pointer; color: var(--muted);
 }
@@ -372,42 +429,66 @@ input:focus-visible {
 .stage-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; place-items: center; padding: 24px; }
 .stage { display: grid; place-items: center; }
 
-.floor {
-  position: relative;
-  background: var(--surface-2);
-  border: 1.5px solid var(--accent);
-  box-shadow: var(--shadow);
-  background-image:
-    linear-gradient(var(--grid-minor) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-minor) 1px, transparent 1px),
-    linear-gradient(var(--grid-major) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-major) 1px, transparent 1px);
-  background-position: 0 0;
-}
+/* The floor is just a positioning frame sized to the room's bounding box.
+   The sheet itself — fill, grid, outline, wall dimensions — is drawn in the
+   room layer, so a non-rectangular outline can clip its own grid. */
+.floor { position: relative; }
 
-/* Room dimension labels on the edges */
-.floor::before, .floor::after {
-  position: absolute; font-family: "JetBrains Mono", monospace;
-  font-size: 12px; color: var(--accent-ink); font-weight: 500;
-  background: var(--surface-2); padding: 1px 6px; border-radius: 4px;
-  letter-spacing: 0.02em; pointer-events: none;
+.room-layer {
+  position: absolute; top: 0; left: 0;
+  overflow: visible; pointer-events: none;
+  z-index: 0;
 }
-.floor::before { content: attr(data-w); top: -11px; left: 50%; transform: translateX(-50%); }
-.floor::after  { content: attr(data-l); left: -11px; top: 50%; transform: translateY(-50%) rotate(-90deg); transform-origin: center; }
+.room-fill {
+  fill: var(--surface-2);
+  filter: drop-shadow(0 1px 2px rgba(28, 42, 50, 0.06))
+          drop-shadow(0 8px 20px rgba(28, 42, 50, 0.08));
+}
+:root[data-theme="dark"] .room-fill,
+:root:not([data-theme="light"]) .room-fill {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35))
+          drop-shadow(0 10px 26px rgba(0, 0, 0, 0.40));
+}
+:root[data-theme="light"] .room-fill {
+  filter: drop-shadow(0 1px 2px rgba(28, 42, 50, 0.06))
+          drop-shadow(0 8px 20px rgba(28, 42, 50, 0.08));
+}
+.room-outline { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; }
+.grid-minor { fill: none; stroke: var(--grid-minor); stroke-width: 1; }
+.grid-major { fill: none; stroke: var(--grid-major); stroke-width: 1; }
 
 /* Center reference lines — the grid is scaled so a real grid line
    coincides with these at the room's exact midpoint. */
-.center-line { position: absolute; pointer-events: none; z-index: 0; }
-.center-v {
-  top: 0; bottom: 0; left: 50%; width: 0;
-  border-left: 1px dashed var(--accent); opacity: 0.42;
-  transform: translateX(-0.5px);
+.center-rule {
+  stroke: var(--accent); stroke-width: 1; stroke-dasharray: 5 5; opacity: 0.42;
 }
-.center-h {
-  left: 0; right: 0; top: 50%; height: 0;
-  border-top: 1px dashed var(--accent); opacity: 0.42;
-  transform: translateY(-0.5px);
+
+/* Wall dimension chips */
+.dim-bg { fill: var(--surface-2); }
+.dim-text {
+  font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 500;
+  fill: var(--accent-ink); letter-spacing: 0.02em;
 }
+
+/* Corner handles for a custom outline */
+.vertex-hit {
+  position: absolute; top: 0; left: 0; z-index: 6;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--accent); background: var(--surface-2);
+  cursor: grab; touch-action: none;
+  box-shadow: var(--shadow-sm);
+}
+.vertex-hit:hover { background: var(--accent); }
+.vertex-hit.selected { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.vertex-hit.dragging { cursor: grabbing; background: var(--accent); }
+.vertex-hit.mid {
+  border-style: dashed; color: var(--accent);
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; line-height: 1;
+  cursor: pointer; opacity: 0.55;
+}
+.vertex-hit.mid:hover { opacity: 1; background: var(--accent-wash); }
+:root[data-theme="dark"] .vertex-hit.mid:hover { background: rgba(95,182,196,0.18); }
 
 /* Doors & windows — graphics drawn in an SVG overlay, with a separate
    transparent hit box per opening for dragging/selection. */
@@ -419,7 +500,8 @@ input:focus-visible {
 .door-arc, .door-leaf { fill: none; stroke: #7C8B93; stroke-width: 2; stroke-linecap: round; }
 .door-leaf { stroke-width: 2.5; }
 .door-arc { opacity: 0.85; }
-.win-body { fill: rgba(91, 133, 166, 0.32); stroke: #5B85A6; stroke-width: 1.5; }
+/* A window is a thick pale band along the wall with a sill line down its middle */
+.win-body { stroke: rgba(91, 133, 166, 0.42); stroke-width: 7; }
 .win-line { stroke: #5B85A6; stroke-width: 1.5; }
 .opening-hit {
   position: absolute; top: 0; left: 0; z-index: 1;
@@ -455,6 +537,23 @@ input:focus-visible {
 .piece .p-dim { font-family: "JetBrains Mono", monospace; font-size: 10px; opacity: 0.85; margin-top: 1px; }
 .piece.tiny .p-dim { display: none; }
 .piece.tiny .p-label { font-size: 10px; }
+
+/* Closets read as built-in structure: hatched fill, a heavier "doors" edge and
+   a dashed hanging rod set back from it. Rotating moves the doors round. */
+.piece.closet {
+  border-style: dashed;
+  background-image: repeating-linear-gradient(
+    45deg, rgba(255,255,255,0.18) 0 2px, transparent 2px 7px);
+}
+.piece .c-doors, .piece .c-rod { position: absolute; pointer-events: none; }
+.piece .c-doors { background: rgba(0, 0, 0, 0.55); border-radius: 1px; }
+.piece .c-rod { opacity: 0.65; }
+
+/* A piece that no longer fits inside a reshaped outline */
+.piece.outside { outline: 2px dashed var(--danger); outline-offset: -2px; }
+
+/* Marks a closet row in the piece list — an icon, since the rail is narrow */
+.p-tag { flex: 0 0 auto; display: grid; place-items: center; color: var(--faint); }
 
 .stage-hint { flex: 0 0 auto; text-align: center; color: var(--faint); font-size: 12px; padding: 8px 12px 12px; margin: 0; }
 

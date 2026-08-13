@@ -3,6 +3,11 @@
    Geometry is stored internally in METERS so units are just a
    display concern. The floor renders at a scale (px per meter)
    computed to fit the room in the stage, times a zoom factor.
+
+   The room is a POLYGON. Rectangles and L-shapes are generated
+   from parameters; "custom" keeps an editable vertex list. All
+   plan geometry (walls, openings, clamping) works off that
+   polygon, so nothing downstream assumes four square corners.
    ============================================================ */
 
 (() => {
@@ -37,6 +42,9 @@
     "#A6705A", // clay
     "#8A8B4A", // olive
   ];
+  /* Closets read as built-in structure rather than furniture, so they get
+     one neutral tone instead of a slot in the categorical palette. */
+  const CLOSET_COLOR = "#7C8890";
 
   /* ---- Presets: typical footprints, stored in feet for authoring ---- */
   const PRESETS = [
@@ -49,37 +57,67 @@
     { label: "Armchair",    w: 2.7, d: 2.7 },
     { label: "Bookshelf",   w: 3.0, d: 1.0 },
   ];
+  const CLOSET_PRESETS = [
+    { label: "Reach-in closet", w: 6.0, d: 2.0 },
+    { label: "Walk-in closet",  w: 6.0, d: 6.0 },
+    { label: "Wardrobe",        w: 4.0, d: 2.0 },
+    { label: "Linen closet",    w: 2.5, d: 1.8 },
+  ];
 
   /* Default opening sizes, authored in feet */
   const DOOR_W_M = 2.75 * M_PER_FT;   // ~33 in interior door
   const WINDOW_W_M = 3.0 * M_PER_FT;  // ~36 in window
 
+  /* A door on a wall has exactly four orientations: hinge at either jamb,
+     swinging either way. Cycling this list is "rotate". */
+  const DOOR_STATES = [
+    { flip: false, out: false },
+    { flip: true,  out: false },
+    { flip: true,  out: true  },
+    { flip: false, out: true  },
+  ];
+
   /* ---- Default state ---- */
   const defaultState = () => ({
     unit: "ft",
-    room: { w: 12 * M_PER_FT, l: 14 * M_PER_FT },
+    room: {
+      shape: "rect",                                   // rect | l | custom
+      w: 12 * M_PER_FT, l: 14 * M_PER_FT,              // bounding box
+      notch: { w: 4 * M_PER_FT, l: 4 * M_PER_FT, corner: "tr" },  // L-shape cut-out
+      poly: null,                                      // vertex list when shape === custom
+    },
     snap: true,
     zoom: 1,
     colorSeed: 0,
-    pieces: [],
-    openings: [],   // { id, kind:'door'|'window', wall, pos(m), width(m), flip }
+    pieces: [],     // { id, type:'furniture'|'closet', label, w, d, rot, color, x, y }
+    openings: [],   // { id, kind:'door'|'window', edge, pos(m), width(m), flip, out }
   });
 
   let state = load() || defaultState();
   let selectedId = null;
-  let baseScale = 40; // px per meter, recomputed on render
+  let baseScale = 40;         // px per meter, recomputed on render
+  let addType = "furniture";  // which preset group / piece type the add form builds
+
+  /* Derived room geometry, rebuilt whenever the room changes. */
+  const R = { poly: [], edges: [], w: 1, l: 1, area: 0, names: [] };
 
   /* ---- Element handles ---- */
   const $ = (id) => document.getElementById(id);
   const els = {
+    shapeToggle: $("shapeToggle"),
+    rectFields: $("rectFields"), lFields: $("lFields"), customFields: $("customFields"),
     roomW: $("roomW"), roomL: $("roomL"),
+    notchW: $("notchW"), notchL: $("notchL"), cornerPick: $("cornerPick"),
+    resetPoly: $("resetPoly"), pointCount: $("pointCount"),
     roomArea: $("roomArea"), pieceCount: $("pieceCount"),
+    typeToggle: $("typeToggle"),
     presets: $("presets"), addForm: $("addForm"),
-    addLabel: $("addLabel"), addW: $("addW"), addD: $("addD"),
+    addLabel: $("addLabel"), addW: $("addW"), addD: $("addD"), addSubmit: $("addSubmit"),
     pieceList: $("pieceList"), emptyPieces: $("emptyPieces"), clearAll: $("clearAll"),
     orderHint: $("orderHint"),
     addDoor: $("addDoor"), addWindow: $("addWindow"),
-    openingList: $("openingList"), emptyOpenings: $("emptyOpenings"), openingsLayer: $("openingsLayer"),
+    openingList: $("openingList"), emptyOpenings: $("emptyOpenings"),
+    roomLayer: $("roomLayer"), openingsLayer: $("openingsLayer"),
     snapToggle: $("snapToggle"),
     zoomIn: $("zoomIn"), zoomOut: $("zoomOut"), zoomFit: $("zoomFit"),
     stageScroll: $("stageScroll"), stage: $("stage"), floor: $("floor"),
@@ -120,9 +158,148 @@
       if (!raw) return null;
       const s = JSON.parse(raw);
       if (!s || !s.room || !Array.isArray(s.pieces)) return null;
-      if (!Array.isArray(s.openings)) s.openings = []; // migrate older saves
-      return s;
+      return migrate(s);
     } catch (_) { return null; }
+  }
+
+  /* Bring a save from an older schema up to the current one. */
+  function migrate(s) {
+    const d = defaultState();
+    if (!Array.isArray(s.openings)) s.openings = [];
+    if (!s.room.shape) s.room.shape = "rect";
+    if (!s.room.notch) s.room.notch = d.room.notch;
+    if (!Array.isArray(s.room.poly)) s.room.poly = null;
+    if (s.room.shape === "custom" && !s.room.poly) s.room.shape = "rect";
+
+    for (const p of s.pieces) {
+      if (p.type !== "closet") p.type = "furniture";
+      if (typeof p.rot !== "number") p.rot = 0;
+    }
+    // Openings used to name a wall; they now index a polygon edge. On a
+    // rectangle those edges run top, right, bottom, left.
+    const WALL_EDGE = { top: 0, right: 1, bottom: 2, left: 3 };
+    for (const o of s.openings) {
+      if (typeof o.edge !== "number") o.edge = WALL_EDGE[o.wall] ?? 0;
+      delete o.wall;
+      o.flip = !!o.flip; o.out = !!o.out;
+    }
+    return s;
+  }
+
+  /* ================= Room polygon ================= */
+  /* Vertices for the current shape, in meters, in the polygon's own frame. */
+  function buildPoly() {
+    const rm = state.room;
+    if (rm.shape === "custom" && Array.isArray(rm.poly) && rm.poly.length >= 3) {
+      return rm.poly.map((p) => [p[0], p[1]]);
+    }
+    const w = Math.max(0.1, rm.w), l = Math.max(0.1, rm.l);
+    if (rm.shape === "l") {
+      const nw = Math.max(0.05, Math.min(rm.notch.w, w - 0.05));
+      const nl = Math.max(0.05, Math.min(rm.notch.l, l - 0.05));
+      switch (rm.notch.corner) {
+        case "tl": return [[nw, 0], [w, 0], [w, l], [0, l], [0, nl], [nw, nl]];
+        case "tr": return [[0, 0], [w - nw, 0], [w - nw, nl], [w, nl], [w, l], [0, l]];
+        case "bl": return [[0, 0], [w, 0], [w, l], [nw, l], [nw, l - nl], [0, l - nl]];
+        default:   return [[0, 0], [w, 0], [w, l - nl], [w - nw, l - nl], [w - nw, l], [0, l]];
+      }
+    }
+    return [[0, 0], [w, 0], [w, l], [0, l]];
+  }
+
+  /* Shoelace area. Positive means the ring runs clockwise on screen (y down),
+     which is the winding the inward-normal formula below assumes. */
+  function polyArea(poly) {
+    let a = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      a += poly[j][0] * poly[i][1] - poly[i][0] * poly[j][1];
+    }
+    return a / 2;
+  }
+
+  /* Recompute every cached quantity that depends on the room outline. */
+  function rebuildRoom() {
+    let poly = buildPoly();
+    if (polyArea(poly) < 0) {
+      poly.reverse();
+      // Keep the editable copy in the same order, or vertex indices desync.
+      if (state.room.shape === "custom") state.room.poly = poly.map((p) => [p[0], p[1]]);
+    }
+    R.poly = poly;
+    R.w = Math.max(0.1, ...poly.map((p) => p[0]));
+    R.l = Math.max(0.1, ...poly.map((p) => p[1]));
+    state.room.w = R.w;
+    state.room.l = R.l;
+    R.area = Math.abs(polyArea(poly));
+
+    R.edges = poly.map((a, i) => {
+      const b = poly[(i + 1) % poly.length];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy) || 1e-6;
+      const ux = dx / len, uy = dy / len;
+      // With clockwise-on-screen winding, (-uy, ux) points into the room.
+      return { a, b, ux, uy, nx: -uy, ny: ux, len, ang: Math.atan2(uy, ux) };
+    });
+    R.names = edgeNames();
+
+    for (const o of state.openings) {
+      o.edge = Math.max(0, Math.min(o.edge | 0, R.edges.length - 1));
+      clampOpening(o);
+    }
+    state.pieces.forEach(clampPiece);
+  }
+
+  /* Short names for walls, derived from which way each one faces. Repeats get
+     numbered, so an L-shaped room reads "Top 1 / Top 2". */
+  function edgeNames() {
+    const base = R.edges.map((e) => {
+      if (Math.abs(e.ux) > Math.abs(e.uy) * 3) return e.ny > 0 ? "Top" : "Bottom";
+      if (Math.abs(e.uy) > Math.abs(e.ux) * 3) return e.nx > 0 ? "Left" : "Right";
+      return "Angled";
+    });
+    const total = {}, seen = {};
+    base.forEach((n) => (total[n] = (total[n] || 0) + 1));
+    return base.map((n) => {
+      if (total[n] === 1) return n;
+      seen[n] = (seen[n] || 0) + 1;
+      return `${n} ${seen[n]}`;
+    });
+  }
+
+  /* ---- Point/rect tests against the outline ---- */
+  function pointInPoly(pt, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+      if ((yi > pt[1]) !== (yj > pt[1]) &&
+          pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  // Proper crossing only — segments that merely touch at an endpoint don't count,
+  // so a piece pushed flush against a wall isn't reported as sticking out.
+  function segCross(p1, p2, p3, p4) {
+    const d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0]);
+    if (Math.abs(d) < 1e-12) return false;
+    const t = ((p3[0] - p1[0]) * (p4[1] - p3[1]) - (p3[1] - p1[1]) * (p4[0] - p3[0])) / d;
+    const u = ((p3[0] - p1[0]) * (p2[1] - p1[1]) - (p3[1] - p1[1]) * (p2[0] - p1[0])) / d;
+    return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9;
+  }
+  /* True when any part of the piece falls outside the room outline. The test
+     rect is inset a hair so pieces parked against a wall read as inside. */
+  function pieceOutside(p) {
+    if (state.room.shape === "rect") return false;   // clamping already guarantees it
+    const fp = footprint(p), e = 1e-3;
+    const x0 = p.x + e, y0 = p.y + e;
+    const x1 = p.x + fp.w - e, y1 = p.y + fp.d - e;
+    if (x1 <= x0 || y1 <= y0) return false;
+    const c = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    for (const pt of c) if (!pointInPoly(pt, R.poly)) return true;
+    for (let i = 0; i < 4; i++) {
+      const a = c[i], b = c[(i + 1) % 4];
+      for (const ed of R.edges) if (segCross(a, b, ed.a, ed.b)) return true;
+    }
+    return false;
   }
 
   /* ================= Color ================= */
@@ -152,30 +329,26 @@
   }
   function clampPiece(p) {
     const fp = footprint(p);
-    p.x = Math.max(0, Math.min(p.x, Math.max(0, state.room.w - fp.w)));
-    p.y = Math.max(0, Math.min(p.y, Math.max(0, state.room.l - fp.d)));
+    p.x = Math.max(0, Math.min(p.x, Math.max(0, R.w - fp.w)));
+    p.y = Math.max(0, Math.min(p.y, Math.max(0, R.l - fp.d)));
   }
 
   /* ---- Openings (doors/windows) attach to a wall at an offset along it ---- */
-  const isHoriz = (o) => o.wall === "top" || o.wall === "bottom";
-  const wallLen = (o) => (isHoriz(o) ? state.room.w : state.room.l);
+  const edgeOf = (o) => R.edges[o.edge] || R.edges[0];
   function clampOpening(o) {
-    o.width = Math.min(o.width, wallLen(o));           // never wider than the wall
-    o.pos = Math.max(0, Math.min(o.pos, wallLen(o) - o.width));
+    const e = edgeOf(o);
+    if (!e) return;
+    o.width = Math.min(o.width, e.len);                // never wider than the wall
+    o.pos = Math.max(0, Math.min(o.pos, e.len - o.width));
   }
-  // Pixel geometry for a given scale. Returns endpoints on the wall (a->b),
-  // the interior normal (into the room), and the wall-line coordinate.
+  /* Pixel geometry for a given scale: the opening's two jambs on the wall,
+     the wall direction, and the inward normal. */
   function openingPx(o, s) {
-    const fw = state.room.w * s, fh = state.room.l * s;
-    const len = o.width * s, a = o.pos * s, b = (o.pos + o.width) * s;
-    if (isHoriz(o)) {
-      const y = o.wall === "top" ? 0 : fh;
-      const ny = o.wall === "top" ? 1 : -1;            // interior direction (down/up)
-      return { horiz: true, y, ny, a, b, len, fw, fh };
-    }
-    const x = o.wall === "left" ? 0 : fw;
-    const nx = o.wall === "left" ? 1 : -1;             // interior direction (right/left)
-    return { horiz: false, x, nx, a, b, len, fw, fh };
+    const e = edgeOf(o);
+    const A = [(e.a[0] + e.ux * o.pos) * s, (e.a[1] + e.uy * o.pos) * s];
+    const len = o.width * s;
+    const B = [A[0] + e.ux * len, A[1] + e.uy * len];
+    return { A, B, ux: e.ux, uy: e.uy, nx: e.nx, ny: e.ny, len, ang: e.ang };
   }
 
   /* Number of grid cells along a dimension: even (so a line hits the exact
@@ -203,36 +376,18 @@
     // reaches up to its own width beyond the wall.
     const outM = state.openings.reduce(
       (m, o) => (o.kind === "door" && o.out ? Math.max(m, o.width) : m), 0);
-    const fit = Math.min(availW / (state.room.w + 2 * outM),
-                         availH / (state.room.l + 2 * outM));
+    const fit = Math.min(availW / (R.w + 2 * outM), availH / (R.l + 2 * outM));
     baseScale = fit * state.zoom;
   }
 
   function render() {
     computeScale();
     const s = baseScale;
-    const floorW = state.room.w * s;
-    const floorH = state.room.l * s;
 
-    els.floor.style.width = floorW + "px";
-    els.floor.style.height = floorH + "px";
-    els.floor.dataset.w = fmtDim(state.room.w);
-    els.floor.dataset.l = fmtDim(state.room.l);
+    els.floor.style.width = R.w * s + "px";
+    els.floor.style.height = R.l * s + "px";
 
-    // Grid: scale each axis to an EVEN number of cells so a real grid line
-    // falls on the room's midline. Cell size is nudged toward the nominal
-    // grid unit rather than splitting a square.
-    const u = U();
-    const gridM = u.grid / u.perM;                       // nominal minor cell (m)
-    const majorMult = Math.max(1, Math.round(u.major / u.grid));
-    const nx = evenCells(state.room.w, gridM, s);
-    const ny = evenCells(state.room.l, gridM, s);
-    const minorX = (state.room.w / nx) * s;
-    const minorY = (state.room.l / ny) * s;
-    const majorX = minorX * majorMult;
-    const majorY = minorY * majorMult;
-    els.floor.style.backgroundSize =
-      `${minorX}px ${minorY}px, ${minorX}px ${minorY}px, ${majorX}px ${majorY}px, ${majorX}px ${majorY}px`;
+    drawRoom(s);
 
     // Furniture — reconcile DOM
     const seen = new Set();
@@ -257,11 +412,77 @@
     }
 
     reconcileOpenings(s);
+    reconcileVertices(s);
     renderList();
     renderOpeningList();
     renderMeta();
     syncInputs();
   }
+
+  /* ---- The floor sheet: fill, grid, outline and wall dimensions, all drawn
+       in one SVG so the grid can be clipped to a non-rectangular outline. ---- */
+  function drawRoom(s) {
+    const W = R.w * s, H = R.l * s;
+    const pts = R.poly.map(([x, y]) => `${x * s},${y * s}`).join(" ");
+    els.roomLayer.setAttribute("width", W);
+    els.roomLayer.setAttribute("height", H);
+    els.roomLayer.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+    // Grid: scale each axis to an EVEN number of cells so a real grid line
+    // falls on the room's midline. Cell size is nudged toward the nominal
+    // grid unit rather than splitting a square.
+    const u = U();
+    const gridM = u.grid / u.perM;
+    const majorMult = Math.max(1, Math.round(u.major / u.grid));
+    const nx = evenCells(R.w, gridM, s);
+    const ny = evenCells(R.l, gridM, s);
+    const stepX = W / nx, stepY = H / ny;
+    let minor = "", major = "";
+    for (let i = 1; i < nx; i++) {
+      const x = round2(i * stepX);
+      if (i % majorMult) minor += `M${x} 0V${round2(H)}`; else major += `M${x} 0V${round2(H)}`;
+    }
+    for (let j = 1; j < ny; j++) {
+      const y = round2(j * stepY);
+      if (j % majorMult) minor += `M0 ${y}H${round2(W)}`; else major += `M0 ${y}H${round2(W)}`;
+    }
+
+    els.roomLayer.innerHTML =
+      `<defs><clipPath id="roomClip"><polygon points="${pts}" /></clipPath></defs>` +
+      `<polygon class="room-fill" points="${pts}" />` +
+      `<g clip-path="url(#roomClip)">` +
+        `<path class="grid-minor" d="${minor}" />` +
+        `<path class="grid-major" d="${major}" />` +
+        `<line class="center-rule" x1="${W / 2}" y1="0" x2="${W / 2}" y2="${H}" />` +
+        `<line class="center-rule" x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" />` +
+      `</g>` +
+      `<polygon class="room-outline" points="${pts}" />` +
+      dimLabels(s);
+  }
+
+  /* Wall dimension chips. A plain rectangle only needs two (width and length);
+     any other outline gets one per wall, since none of them is implied. */
+  function dimLabels(s) {
+    const which = state.room.shape === "rect" ? [0, 3] : R.edges.map((_, i) => i);
+    let out = "";
+    for (const i of which) {
+      const e = R.edges[i];
+      if (!e || e.len * s < 26) continue;              // too short to letter
+      const mx = ((e.a[0] + e.b[0]) / 2) * s - e.nx * 15;
+      const my = ((e.a[1] + e.b[1]) / 2) * s - e.ny * 15;
+      let deg = (e.ang * 180) / Math.PI;
+      if (deg > 90 || deg < -90) deg += 180;           // never upside down
+      const txt = fmtDim(e.len);
+      const w = txt.length * 7.2 + 10;
+      out += `<g transform="translate(${round2(mx)} ${round2(my)}) rotate(${round2(deg)})">` +
+             `<rect class="dim-bg" x="${round2(-w / 2)}" y="-9" width="${round2(w)}" height="18" rx="4" />` +
+             `<text class="dim-text" x="0" y="0" text-anchor="middle" dominant-baseline="central">${txt}</text>` +
+             `</g>`;
+    }
+    return out;
+  }
+
+  const round2 = (n) => Math.round(n * 100) / 100;
 
   /* Reconcile the per-opening hit boxes, then repaint the SVG graphics. */
   function reconcileOpenings(s) {
@@ -288,71 +509,92 @@
     return node;
   }
 
+  /* Hit boxes are laid out in the wall's own frame — local +x runs along the
+     wall, local +y points into the room — then rotated into place. */
   function positionOpeningHit(node, o, s) {
     const g = openingPx(o, s);
-    const pad = 9;                 // grab margin perpendicular to a window
-    let x, y, w, h;
+    let depth, y0;
     if (o.kind === "door") {
-      const depth = o.width * s;   // swing reaches one door-width off the wall
-      const dir = o.out ? -1 : 1;
-      if (g.horiz) { const sy = g.ny * dir; x = g.a; w = g.len; y = sy > 0 ? g.y : g.y - depth; h = depth; }
-      else         { const sx = g.nx * dir; y = g.a; h = g.len; x = sx > 0 ? g.x : g.x - depth; w = depth; }
+      depth = o.width * s;                       // swing reaches one door-width off the wall
+      y0 = o.out ? -depth : 0;
     } else {
-      if (g.horiz) { x = g.a; w = g.len; y = g.y - pad; h = pad * 2; }
-      else         { y = g.a; h = g.len; x = g.x - pad; w = pad * 2; }
+      depth = 18;                                // grab margin either side of a window
+      y0 = -depth / 2;
     }
-    node.style.transform = `translate(${x}px, ${y}px)`;
-    node.style.width = Math.max(6, w) + "px";
-    node.style.height = Math.max(6, h) + "px";
+    node.style.width = Math.max(6, g.len) + "px";
+    node.style.height = Math.max(6, depth) + "px";
+    node.style.transform =
+      `translate(${round2(g.A[0])}px, ${round2(g.A[1])}px) ` +
+      `rotate(${round2((g.ang * 180) / Math.PI)}deg) translate(0, ${round2(y0)}px)`;
     node.classList.toggle("selected", o.id === selectedId);
   }
 
   /* Paint all door/window graphics into the shared SVG overlay. */
   function drawOpenings(s) {
-    const fw = state.room.w * s, fh = state.room.l * s;
-    els.openingsLayer.setAttribute("width", fw);
-    els.openingsLayer.setAttribute("height", fh);
+    els.openingsLayer.setAttribute("width", R.w * s);
+    els.openingsLayer.setAttribute("height", R.l * s);
     let out = "";
     for (const o of state.openings) {
       const g = openingPx(o, s);
       if (o.kind === "window") {
-        const T = 7;
-        if (g.horiz) {
-          out += `<rect class="win-body" x="${g.a}" y="${g.y - T / 2}" width="${g.len}" height="${T}" />`
-              +  `<line class="win-line" x1="${g.a}" y1="${g.y}" x2="${g.b}" y2="${g.y}" />`;
-        } else {
-          out += `<rect class="win-body" x="${g.x - T / 2}" y="${g.a}" width="${T}" height="${g.len}" />`
-              +  `<line class="win-line" x1="${g.x}" y1="${g.a}" x2="${g.x}" y2="${g.b}" />`;
-        }
+        out += `<line class="win-body" x1="${round2(g.A[0])}" y1="${round2(g.A[1])}" x2="${round2(g.B[0])}" y2="${round2(g.B[1])}" />`
+            +  `<line class="win-line" x1="${round2(g.A[0])}" y1="${round2(g.A[1])}" x2="${round2(g.B[0])}" y2="${round2(g.B[1])}" />`;
       } else {
         // Door: hinge H, opposite jamb J, open leaf tip L perpendicular to the
-        // wall. dir = +1 swings into the room, -1 swings outward.
+        // wall. `flip` picks the hinge jamb, `out` picks the swing side; the
+        // four combinations are every orientation a wall door can have.
         const r = o.width * s;
         const dir = o.out ? -1 : 1;
-        let H, J, L;
-        if (g.horiz) {
-          const p1 = [g.a, g.y], p2 = [g.b, g.y];
-          H = o.flip ? p2 : p1; J = o.flip ? p1 : p2;
-          L = [H[0], g.y + g.ny * dir * r];
-        } else {
-          const p1 = [g.x, g.a], p2 = [g.x, g.b];
-          H = o.flip ? p2 : p1; J = o.flip ? p1 : p2;
-          L = [g.x + g.nx * dir * r, H[1]];
-        }
+        const H = o.flip ? g.B : g.A;
+        const J = o.flip ? g.A : g.B;
+        const L = [H[0] + g.nx * dir * r, H[1] + g.ny * dir * r];
         const cross = (J[0] - H[0]) * (L[1] - H[1]) - (J[1] - H[1]) * (L[0] - H[0]);
         const sweep = cross < 0 ? 1 : 0;
-        out += `<path class="door-arc" d="M ${J[0]} ${J[1]} A ${r} ${r} 0 0 ${sweep} ${L[0]} ${L[1]}" />`
-            +  `<line class="door-leaf" x1="${H[0]}" y1="${H[1]}" x2="${L[0]}" y2="${L[1]}" />`;
+        out += `<path class="door-arc" d="M ${round2(J[0])} ${round2(J[1])} A ${round2(r)} ${round2(r)} 0 0 ${sweep} ${round2(L[0])} ${round2(L[1])}" />`
+            +  `<line class="door-leaf" x1="${round2(H[0])}" y1="${round2(H[1])}" x2="${round2(L[0])}" y2="${round2(L[1])}" />`;
       }
     }
     els.openingsLayer.innerHTML = out;
+  }
+
+  /* ---- Corner handles, shown only while editing a custom outline ---- */
+  function reconcileVertices(s) {
+    // Rebuild wholesale: corners are few, and inserting/removing shifts indices.
+    els.floor.querySelectorAll(".vertex-hit").forEach((n) => n.remove());
+    if (state.room.shape !== "custom") return;
+
+    for (let i = 0; i < R.poly.length; i++) {
+      const [x, y] = R.poly[i];
+      const node = document.createElement("div");
+      node.className = "vertex-hit" + (selectedId === `vtx:${i}` ? " selected" : "");
+      node.title = "Drag to reshape · click then press Delete to remove this corner";
+      node.style.transform = `translate(${round2(x * s - 7)}px, ${round2(y * s - 7)}px)`;
+      node.addEventListener("pointerdown", (e) => startDragVertex(e, i, node));
+      els.floor.appendChild(node);
+    }
+    // Midpoint "+" markers insert a corner into that wall.
+    for (let i = 0; i < R.edges.length; i++) {
+      const e = R.edges[i];
+      if (e.len * s < 34) continue;
+      const mx = ((e.a[0] + e.b[0]) / 2) * s, my = ((e.a[1] + e.b[1]) / 2) * s;
+      const node = document.createElement("div");
+      node.className = "vertex-hit mid";
+      node.textContent = "+";
+      node.title = "Add a corner on this wall";
+      node.style.transform = `translate(${round2(mx - 7)}px, ${round2(my - 7)}px)`;
+      node.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      node.addEventListener("click", () => insertVertex(i));
+      els.floor.appendChild(node);
+    }
   }
 
   function createPieceNode(p) {
     const node = document.createElement("div");
     node.className = "piece";
     node.dataset.id = p.id;
-    node.innerHTML = `<span class="p-label"></span><span class="p-dim mono"></span>`;
+    node.innerHTML =
+      `<span class="c-rod" hidden></span><span class="c-doors" hidden></span>` +
+      `<span class="p-label"></span><span class="p-dim mono"></span>`;
     node.addEventListener("pointerdown", (e) => startDrag(e, p, node));
     els.floor.appendChild(node);
     return node;
@@ -361,27 +603,68 @@
   function positionPiece(node, p, s) {
     const fp = footprint(p);
     const w = fp.w * s, h = fp.d * s;
-    node.style.transform = `translate(${p.x * s}px, ${p.y * s}px)`;
+    node.style.transform = `translate(${round2(p.x * s)}px, ${round2(p.y * s)}px)`;
     node.style.width = w + "px";
     node.style.height = h + "px";
     node.style.background = p.color;
     node.style.color = textOn(p.color);
     node.classList.toggle("selected", p.id === selectedId);
     node.classList.toggle("tiny", Math.min(w, h) < 48);
+    node.classList.toggle("closet", p.type === "closet");
+    const out = pieceOutside(p);
+    node.classList.toggle("outside", out);
+    node.title = out ? "This piece sticks outside the room outline" : "";
     node.querySelector(".p-label").textContent = p.label;
     node.querySelector(".p-dim").textContent = `${fmt(p.w)}×${fmt(p.d)}`;
+    dressCloset(node, p, w, h);
+  }
+
+  /* A closet reads as an alcove: door leaves drawn on the front edge, a hanging
+     rod parallel to the back. Rotating the piece moves the doors to the next
+     side, which is how you point a closet at the room it opens into. */
+  const CLOSET_SIDES = ["bottom", "left", "top", "right"];
+  function dressCloset(node, p, w, h) {
+    const rod = node.querySelector(".c-rod");
+    const doors = node.querySelector(".c-doors");
+    if (p.type !== "closet") { rod.hidden = true; doors.hidden = true; return; }
+    rod.hidden = false; doors.hidden = false;
+
+    // rot 0 puts the doors on the bottom edge; each 90° turn moves them round.
+    const front = CLOSET_SIDES[(((p.rot / 90) | 0) % 4 + 4) % 4];
+    const vertical = front === "left" || front === "right";
+    const depth = vertical ? w : h;                       // front-to-back depth, px
+    const inset = Math.max(4, Math.min(14, depth * 0.3));
+
+    const reset = { top: "", right: "", bottom: "", left: "",
+                    width: "", height: "", borderTop: "", borderLeft: "" };
+    Object.assign(doors.style, reset);
+    Object.assign(rod.style, reset);
+
+    if (vertical) {
+      doors.style.top = "0"; doors.style.bottom = "0"; doors.style.width = "3px";
+      rod.style.top = "12%"; rod.style.bottom = "12%"; rod.style.width = "0";
+      rod.style.borderLeft = "1px dashed currentColor";
+    } else {
+      doors.style.left = "0"; doors.style.right = "0"; doors.style.height = "3px";
+      rod.style.left = "12%"; rod.style.right = "12%"; rod.style.height = "0";
+      rod.style.borderTop = "1px dashed currentColor";
+    }
+    doors.style[front] = "0";
+    rod.style[front] = inset + "px";                      // sits back from the doors
   }
 
   function renderMeta() {
-    const areaM = state.room.w * state.room.l;
     // Report area in the system's large unit: ft² for imperial, m² for metric.
-    const areaDisp = U().metric
-      ? `${(Math.round(areaM * 10) / 10)} m²`
-      : `${Math.round(areaM / (M_PER_FT * M_PER_FT))} ft²`;
-    els.roomArea.textContent = areaDisp;
+    els.roomArea.textContent = U().metric
+      ? `${(Math.round(R.area * 10) / 10)} m²`
+      : `${Math.round(R.area / (M_PER_FT * M_PER_FT))} ft²`;
     const n = state.pieces.length;
     els.pieceCount.textContent = `${n} ${n === 1 ? "piece" : "pieces"}`;
     els.clearAll.hidden = n === 0;
+    if (els.pointCount) {
+      const c = R.poly.length;
+      els.pointCount.textContent = `${c} corner${c === 1 ? "" : "s"}`;
+    }
   }
 
   function renderList() {
@@ -397,7 +680,10 @@
         <button type="button" class="drag-handle" title="Drag to reorder, or use the arrow keys. With a piece selected: [ and ] to step, { and } to send fully back or front." aria-label="Reorder ${escapeAttr(p.label)}">${ICON.grip}</button>
         <input type="color" class="swatch" value="${p.color}" title="Change color" aria-label="Color for ${escapeAttr(p.label)}" />
         <div class="piece-main">
-          <input class="piece-label-input" value="${escapeAttr(p.label)}" maxlength="24" aria-label="Label" />
+          <div class="piece-label-row">
+            <input class="piece-label-input" value="${escapeAttr(p.label)}" maxlength="24" aria-label="Label" />
+            ${p.type === "closet" ? `<span class="p-tag" title="Closet — rotate to move its doors">${ICON.closet}</span>` : ""}
+          </div>
           <div class="piece-dims">
             <input type="number" class="edit-w mono" min="0.1" step="any" value="${fmt(p.w)}" aria-label="Width" />
             <span>×</span>
@@ -406,7 +692,7 @@
           </div>
         </div>
         <div class="piece-actions">
-          <button class="mini-btn act-rotate" title="Rotate 90°" aria-label="Rotate">
+          <button class="mini-btn act-rotate" title="${p.type === "closet" ? "Rotate 90° — moves the doors to the next side" : "Rotate 90°"}" aria-label="Rotate">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/></svg>
           </button>
           <button class="mini-btn act-dupe" title="Duplicate" aria-label="Duplicate">
@@ -465,6 +751,8 @@
     grip: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>`,
     door: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 21h16M7 21V4h8v17M13 12v.01"/><path d="M15 4a5 5 0 0 1 5 5v12" stroke-opacity="0.5"/></svg>`,
     window: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M12 4v16M4 12h16"/></svg>`,
+    closet: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path d="M12 4v16M9.5 12h.01M14.5 12h.01"/></svg>`,
+    rotate: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/></svg>`,
     flip: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg>`,
     swing: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 3v18"/><path d="M7 8a10 10 0 0 1 10 10"/><path d="M17 14v4h-4"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13h10l1-13"/></svg>`,
@@ -477,15 +765,17 @@
       const li = document.createElement("li");
       li.className = "opening-item" + (o.id === selectedId ? " selected" : "");
       li.dataset.id = o.id;
-      const wallName = o.wall.charAt(0).toUpperCase() + o.wall.slice(1);
+      const wallName = R.names[o.edge] || "wall";
+      const swing = o.kind === "door" && o.out ? " · out" : "";   // "in" is the default, so it goes unsaid
       const doorBtns = o.kind === "door"
-        ? `<button class="mini-btn act-swing${o.out ? " active" : ""}" title="${o.out ? "Swinging outward — click for inward" : "Swinging inward — click for outward"}" aria-label="Toggle swing direction">${ICON.swing}</button>`
-          + `<button class="mini-btn act-flip" title="Flip hinge" aria-label="Flip hinge">${ICON.flip}</button>`
+        ? `<button class="mini-btn act-rot" title="Rotate — steps through all four hinge / swing positions (R)" aria-label="Rotate door">${ICON.rotate}</button>`
+          + `<button class="mini-btn act-flip" title="Flip the hinge to the other jamb (F)" aria-label="Flip hinge">${ICON.flip}</button>`
+          + `<button class="mini-btn act-swing${o.out ? " active" : ""}" title="${o.out ? "Swinging outward — click for inward (O)" : "Swinging inward — click for outward (O)"}" aria-label="Toggle swing direction">${ICON.swing}</button>`
         : "";
       li.innerHTML = `
         <span class="op-icon">${ICON[o.kind]}</span>
         <div class="op-main">
-          <div class="op-kind">${o.kind === "door" ? "Door" : "Window"} <span class="op-wall">· ${wallName} wall${o.kind === "door" && o.out ? " · out" : ""}</span></div>
+          <div class="op-kind">${o.kind === "door" ? "Door" : "Window"} <span class="op-wall">· ${escapeAttr(wallName)}${swing}</span></div>
           <div class="op-dims">
             <input type="number" class="op-w mono" min="0.1" step="any" value="${fmt(o.width)}" aria-label="Width" />
             <span>${unitLabel()} wide</span>
@@ -499,10 +789,9 @@
         o.width = Math.max(0.05, toMeters(parseFloat(e.target.value) || 0));
         clampOpening(o); save(); render();
       });
-      const flip = li.querySelector(".act-flip");
-      if (flip) flip.addEventListener("click", () => flipOpening(o));
-      const swing = li.querySelector(".act-swing");
-      if (swing) swing.addEventListener("click", () => toggleSwing(o));
+      li.querySelector(".act-rot")?.addEventListener("click", () => rotateOpening(o));
+      li.querySelector(".act-flip")?.addEventListener("click", () => flipOpening(o));
+      li.querySelector(".act-swing")?.addEventListener("click", () => toggleSwing(o));
       li.querySelector(".act-opdel").addEventListener("click", () => removeOpening(o.id));
       li.addEventListener("click", (e) => {
         if (e.target.closest("button, input")) return;
@@ -513,28 +802,42 @@
   }
 
   function syncInputs() {
-    if (document.activeElement !== els.roomW) els.roomW.value = fmt(state.room.w);
-    if (document.activeElement !== els.roomL) els.roomL.value = fmt(state.room.l);
+    const rm = state.room;
+    if (document.activeElement !== els.roomW) els.roomW.value = fmt(rm.w);
+    if (document.activeElement !== els.roomL) els.roomL.value = fmt(rm.l);
+    if (document.activeElement !== els.notchW) els.notchW.value = fmt(rm.notch.w);
+    if (document.activeElement !== els.notchL) els.notchL.value = fmt(rm.notch.l);
+    els.rectFields.hidden = rm.shape === "custom";
+    els.lFields.hidden = rm.shape !== "l";
+    els.customFields.hidden = rm.shape !== "custom";
+    els.shapeToggle.querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("is-active", b.dataset.shape === rm.shape));
+    els.cornerPick.querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("is-active", b.dataset.corner === rm.notch.corner));
+    els.typeToggle.querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("is-active", b.dataset.type === addType));
     els.snapToggle.checked = state.snap;
     els.unitLabels.forEach((n) => (n.textContent = unitLabel()));
     els.unitBtns.forEach((b) => b.classList.toggle("is-active", b.dataset.unit === state.unit));
   }
 
   /* ================= Piece operations ================= */
-  function addPiece(label, wDisp, dDisp) {
+  function addPiece(label, wDisp, dDisp, type) {
     const w = toMeters(wDisp), d = toMeters(dDisp);
+    const kind = type === "closet" ? "closet" : "furniture";
     // Cascade new pieces so they don't stack exactly
     const off = toMeters(unitStep()) * (state.pieces.length % 8) * 2;
     const p = {
-      id: uid(), label: label || "Piece",
-      w, d, rot: 0, color: nextColor(),
-      x: snapVal(Math.min(off, Math.max(0, state.room.w - w))),
-      y: snapVal(Math.min(off, Math.max(0, state.room.l - d))),
+      id: uid(), type: kind, label: label || (kind === "closet" ? "Closet" : "Piece"),
+      w, d, rot: 0, color: kind === "closet" ? CLOSET_COLOR : nextColor(),
+      x: snapVal(Math.min(off, Math.max(0, R.w - w))),
+      y: snapVal(Math.min(off, Math.max(0, R.l - d))),
     };
     clampPiece(p);
     state.pieces.push(p);
     selectedId = p.id;
     save(); render();
+    return p;
   }
   function rotatePiece(p) {
     p.rot = (p.rot + 90) % 360;
@@ -573,13 +876,24 @@
   /* ================= Opening operations ================= */
   function addOpening(kind) {
     const width = kind === "door" ? DOOR_W_M : WINDOW_W_M;
-    const o = { id: uid(), kind, wall: "top", width, pos: 0, flip: false, out: false };
-    o.pos = Math.max(0, state.room.w / 2 - width / 2);   // centered on the top wall
+    const o = { id: uid(), kind, edge: 0, width, pos: 0, flip: false, out: false };
+    const e = R.edges[0];
+    o.width = Math.min(width, e.len);
+    o.pos = Math.max(0, e.len / 2 - o.width / 2);       // centered on the first wall
     clampOpening(o);
     state.openings.push(o);
     selectedId = o.id;
     save(); render();
     return o;
+  }
+  /* Step through every orientation a wall door can take: hinge left/right
+     crossed with swinging in/out. */
+  function rotateOpening(o) {
+    if (o.kind !== "door") return;
+    const i = DOOR_STATES.findIndex((d) => d.flip === !!o.flip && d.out === !!o.out);
+    const next = DOOR_STATES[(i + 1) % DOOR_STATES.length];
+    o.flip = next.flip; o.out = next.out;
+    save(); render();
   }
   function flipOpening(o) { o.flip = !o.flip; save(); render(); }
   function toggleSwing(o) { o.out = !o.out; save(); render(); }
@@ -587,6 +901,37 @@
     state.openings = state.openings.filter((o) => o.id !== id);
     if (selectedId === id) selectedId = null;
     save(); render();
+  }
+
+  /* ================= Room shape operations ================= */
+  function setShape(shape) {
+    if (state.room.shape === shape) return;
+    // Entering custom seeds the vertex list from whatever is on screen now.
+    if (shape === "custom") state.room.poly = buildPoly();
+    state.room.shape = shape;
+    selectedId = null;
+    rebuildRoom(); save(); render();
+  }
+  function insertVertex(edgeIndex) {
+    const e = R.edges[edgeIndex];
+    if (!e) return;
+    const mid = [snapVal((e.a[0] + e.b[0]) / 2), snapVal((e.a[1] + e.b[1]) / 2)];
+    state.room.poly = R.poly.map((p) => [p[0], p[1]]);
+    state.room.poly.splice(edgeIndex + 1, 0, mid);
+    selectedId = `vtx:${edgeIndex + 1}`;
+    rebuildRoom(); save(); render();
+  }
+  function removeVertex(i) {
+    if (!state.room.poly || state.room.poly.length <= 3) return;
+    state.room.poly.splice(i, 1);
+    selectedId = null;
+    rebuildRoom(); save(); render();
+  }
+  function resetPoly() {
+    state.room.shape = "rect";
+    state.room.poly = null;
+    selectedId = null;
+    rebuildRoom(); save(); render();
   }
 
   /* ================= Dragging ================= */
@@ -694,8 +1039,8 @@
     render();
   }
 
-  /* ---- Dragging an opening: it slides along its wall and snaps to whichever
-       wall is nearest, so you can drag a door from one wall to another. ---- */
+  /* ---- Dragging an opening: it slides along its wall and hops to whichever
+       wall is nearest, so you can drag a door around the whole outline. ---- */
   let odrag = null;
   function startDragOpening(e, o, node) {
     if (e.button != null && e.button !== 0) return;
@@ -710,17 +1055,24 @@
     node.addEventListener("pointerup", endDragOpening);
     node.addEventListener("pointercancel", endDragOpening);
   }
+  /* Nearest wall to a point, plus how far along that wall the foot lands. */
+  function nearestEdge(px, py) {
+    let best = { index: 0, along: 0, dist: Infinity };
+    R.edges.forEach((e, i) => {
+      const t = Math.max(0, Math.min(e.len, (px - e.a[0]) * e.ux + (py - e.a[1]) * e.uy));
+      const d = Math.hypot(px - (e.a[0] + e.ux * t), py - (e.a[1] + e.uy * t));
+      if (d < best.dist) best = { index: i, along: t, dist: d };
+    });
+    return best;
+  }
   function onDragOpening(e) {
     if (!odrag) return;
     const { o, rect } = odrag;
     const px = (e.clientX - rect.left) / baseScale;    // pointer in room meters
     const py = (e.clientY - rect.top) / baseScale;
-    const W = state.room.w, L = state.room.l;
-    // Nearest wall by perpendicular distance
-    const d = { top: Math.abs(py), bottom: Math.abs(L - py), left: Math.abs(px), right: Math.abs(W - px) };
-    o.wall = Object.keys(d).reduce((best, k) => (d[k] < d[best] ? k : best), "top");
-    const along = isHoriz(o) ? px : py;                // position of pointer along the wall
-    o.pos = snapVal(along - o.width / 2);
+    const hit = nearestEdge(px, py);
+    o.edge = hit.index;
+    o.pos = snapVal(hit.along - o.width / 2);
     clampOpening(o);
     drawOpenings(baseScale);
     positionOpeningHit(odrag.node, o, baseScale);
@@ -736,13 +1088,49 @@
     save(); render();
   }
 
+  /* ---- Dragging a corner of a custom outline ---- */
+  let vdrag = null;
+  function startDragVertex(e, i, node) {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectedId = `vtx:${i}`;
+    node.classList.add("dragging", "selected");
+    node.setPointerCapture(e.pointerId);
+    vdrag = { i, node, pointerId: e.pointerId, rect: els.floor.getBoundingClientRect(), moved: false };
+    node.addEventListener("pointermove", onDragVertex);
+    node.addEventListener("pointerup", endDragVertex);
+    node.addEventListener("pointercancel", endDragVertex);
+  }
+  function onDragVertex(e) {
+    if (!vdrag) return;
+    const { rect, i } = vdrag;
+    const x = Math.max(0, snapVal((e.clientX - rect.left) / baseScale));
+    const y = Math.max(0, snapVal((e.clientY - rect.top) / baseScale));
+    state.room.poly[i] = [x, y];
+    vdrag.moved = true;
+    rebuildRoom();
+    render();       // the whole sheet resizes as a corner moves, so redraw it all
+  }
+  function endDragVertex(e) {
+    if (!vdrag) return;
+    try { vdrag.node.releasePointerCapture(vdrag.pointerId); } catch (_) {}
+    vdrag.node.removeEventListener("pointermove", onDragVertex);
+    vdrag.node.removeEventListener("pointerup", endDragVertex);
+    vdrag.node.removeEventListener("pointercancel", endDragVertex);
+    vdrag = null;
+    save(); render();
+  }
+
   /* ================= Presets UI ================= */
   function buildPresets() {
-    PRESETS.forEach((preset, i) => {
+    els.presets.innerHTML = "";
+    const list = addType === "closet" ? CLOSET_PRESETS : PRESETS;
+    list.forEach((preset, i) => {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "preset-chip";
-      const color = PALETTE[i % PALETTE.length];
+      const color = addType === "closet" ? CLOSET_COLOR : PALETTE[i % PALETTE.length];
       chip.innerHTML = `<span class="dot" style="background:${color}"></span>${preset.label}`;
       chip.addEventListener("click", () => {
         // preset dims are authored in feet -> convert to the current unit
@@ -755,34 +1143,62 @@
       els.presets.appendChild(chip);
     });
   }
+  function setAddType(type) {
+    if (addType === type) return;
+    addType = type;
+    els.addLabel.placeholder = type === "closet" ? "e.g. Reach-in closet" : "e.g. Queen bed";
+    els.addSubmit.textContent = type === "closet" ? "Place closet" : "Place in room";
+    buildPresets();
+    syncInputs();
+  }
 
   /* ================= Events ================= */
   function bind() {
+    // Room shape
+    els.shapeToggle.querySelectorAll("button").forEach((b) =>
+      b.addEventListener("click", () => setShape(b.dataset.shape)));
+    els.cornerPick.querySelectorAll("button").forEach((b) =>
+      b.addEventListener("click", () => {
+        state.room.notch.corner = b.dataset.corner;
+        rebuildRoom(); save(); render();
+      }));
+    els.resetPoly.addEventListener("click", resetPoly);
+
     // Room dimensions
     const applyRoom = () => {
       const w = toMeters(parseFloat(els.roomW.value) || 0);
       const l = toMeters(parseFloat(els.roomL.value) || 0);
       if (w > 0) state.room.w = w;
       if (l > 0) state.room.l = l;
-      state.pieces.forEach(clampPiece);
-      state.openings.forEach(clampOpening);
-      save(); render();
+      rebuildRoom(); save(); render();
     };
     els.roomW.addEventListener("change", applyRoom);
     els.roomL.addEventListener("change", applyRoom);
+
+    const applyNotch = () => {
+      const w = toMeters(parseFloat(els.notchW.value) || 0);
+      const l = toMeters(parseFloat(els.notchL.value) || 0);
+      if (w > 0) state.room.notch.w = w;
+      if (l > 0) state.room.notch.l = l;
+      rebuildRoom(); save(); render();
+    };
+    els.notchW.addEventListener("change", applyNotch);
+    els.notchL.addEventListener("change", applyNotch);
 
     // Add doors / windows
     els.addDoor.addEventListener("click", () => addOpening("door"));
     els.addWindow.addEventListener("click", () => addOpening("window"));
 
     // Add piece
+    els.typeToggle.querySelectorAll("button").forEach((b) =>
+      b.addEventListener("click", () => setAddType(b.dataset.type)));
     els.addForm.addEventListener("submit", (e) => {
       e.preventDefault();
       const label = els.addLabel.value.trim();
       const w = parseFloat(els.addW.value);
       const d = parseFloat(els.addD.value);
       if (!(w > 0) || !(d > 0)) return;
-      addPiece(label, w, d);
+      addPiece(label, w, d, addType);
       els.addForm.reset();
       els.addLabel.focus();
     });
@@ -827,7 +1243,8 @@
 
     // Deselect on background click
     els.stageScroll.addEventListener("pointerdown", (e) => {
-      if (e.target === els.stageScroll || e.target === els.stage || e.target === els.floor) {
+      if (e.target === els.stageScroll || e.target === els.stage ||
+          e.target === els.floor || e.target === els.roomLayer) {
         if (selectedId) { selectedId = null; render(); }
       }
     });
@@ -840,6 +1257,7 @@
       const nudge = toMeters(unitStep());
       const p = state.pieces.find((x) => x.id === selectedId);
       const o = state.openings.find((x) => x.id === selectedId);
+      const v = selectedId.startsWith("vtx:") ? parseInt(selectedId.slice(4), 10) : -1;
       if (p) {
         if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removePiece(p.id); }
         else if (e.key === "r" || e.key === "R") { rotatePiece(p); }
@@ -854,10 +1272,14 @@
         else return;
       } else if (o) {
         if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeOpening(o.id); }
+        else if ((e.key === "r" || e.key === "R") && o.kind === "door") { rotateOpening(o); }
         else if ((e.key === "f" || e.key === "F") && o.kind === "door") { flipOpening(o); }
         else if ((e.key === "o" || e.key === "O") && o.kind === "door") { toggleSwing(o); }
         else if (e.key === "ArrowLeft" || e.key === "ArrowUp")    { o.pos -= nudge; clampOpening(o); save(); render(); }
         else if (e.key === "ArrowRight" || e.key === "ArrowDown") { o.pos += nudge; clampOpening(o); save(); render(); }
+        else return;
+      } else if (v >= 0) {
+        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeVertex(v); }
         else return;
       } else return;
       if (e.key.startsWith("Arrow")) e.preventDefault();
@@ -888,19 +1310,30 @@
   }
 
   function seedExample() {
-    // First-run: drop in a couple of pieces + a door and window
+    // First-run: drop in a couple of pieces, a closet, a door and a window
     if (state.pieces.length || state.openings.length) return;
-    addPiece("Queen bed", 5, 6.7);
-    addPiece("Dresser", 5, 1.7);
-    const win = addOpening("window");            // top wall, centered
+    const place = (p, xFt, yFt) => {
+      p.x = xFt * M_PER_FT; p.y = yFt * M_PER_FT; clampPiece(p);
+    };
+    place(addPiece("Queen bed", 5, 6.7, "furniture"), 0.5, 5);
+    place(addPiece("Dresser", 5, 1.7, "furniture"), 6.5, 12);
+    place(addPiece("Reach-in closet", 6, 2, "closet"), 6, 0);
+    const win = addOpening("window");
+    win.pos = 1 * M_PER_FT;                        // clear of the closet
+    clampOpening(win);
     const door = addOpening("door");
-    door.wall = "bottom";
-    door.pos = Math.max(0, state.room.w / 2 - door.width / 2);
-    clampOpening(door);
+    if (R.edges.length > 2) {                      // the far wall on a rectangle
+      door.edge = 2;
+      door.pos = Math.max(0, R.edges[2].len / 2 - door.width / 2);
+      clampOpening(door);
+    }
     selectedId = null;
+    save();
   }
 
   initTheme();
+  rebuildRoom();
+  save();          // write back anything migrate() had to fix up
   buildPresets();
   bind();
   seedExample();
