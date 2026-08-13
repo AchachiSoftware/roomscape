@@ -296,8 +296,24 @@ input:focus-visible {
 .piece-item {
   border: 1px solid var(--line); border-radius: 10px; padding: 10px;
   background: var(--surface-2);
-  display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+  display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center;
 }
+/* Reorder grip — list order is paint order, top of the list draws on top */
+.drag-handle {
+  display: grid; place-items: center;
+  width: 18px; height: 30px; margin: 0 -4px 0 -2px; padding: 0;
+  border: 0; background: transparent; color: var(--faint);
+  border-radius: 5px; cursor: grab; touch-action: none;
+}
+.drag-handle:hover { color: var(--accent); }
+.drag-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.piece-item.reordering .drag-handle { cursor: grabbing; }
+.piece-item.reordering {
+  border-color: var(--accent); box-shadow: 0 10px 22px rgba(0,0,0,0.16);
+  opacity: 0.96;
+}
+.piece-list.is-reordering { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.piece-list.is-reordering .piece-item:not(.reordering) { opacity: 0.72; }
 .piece-item.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
 :root[data-theme="dark"] .piece-item.selected { box-shadow: 0 0 0 2px rgba(95,182,196,0.22); }
 /* Native color picker styled as a compact swatch */
@@ -334,6 +350,7 @@ input:focus-visible {
 :root[data-theme="dark"] .mini-btn.active { background: rgba(95,182,196,0.14); }
 
 .empty-hint { color: var(--faint); font-size: 13px; line-height: 1.5; margin: 4px 0 0; }
+.list-hint { color: var(--faint); font-size: 12px; line-height: 1.4; margin: -8px 0 12px; }
 
 /* ---------- Stage ---------- */
 .stage-wrap {
@@ -426,7 +443,9 @@ input:focus-visible {
   padding: 2px;
 }
 .piece:hover { box-shadow: 0 0 0 2px var(--accent-wash), var(--shadow-sm); }
-.piece.selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow); z-index: 3; }
+/* No z-index bump on hover or select: stacking is the user's to control now,
+   and lifting the selection would misreport the order they arranged. */
+.piece.selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
 .piece.dragging { cursor: grabbing; z-index: 4; box-shadow: 0 0 0 2px var(--accent), 0 12px 28px rgba(0,0,0,0.22); }
 .piece .p-label {
   font-family: "Hanken Grotesk", sans-serif; font-weight: 700;

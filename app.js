@@ -77,6 +77,7 @@
     presets: $("presets"), addForm: $("addForm"),
     addLabel: $("addLabel"), addW: $("addW"), addD: $("addD"),
     pieceList: $("pieceList"), emptyPieces: $("emptyPieces"), clearAll: $("clearAll"),
+    orderHint: $("orderHint"),
     addDoor: $("addDoor"), addWindow: $("addWindow"),
     openingList: $("openingList"), emptyOpenings: $("emptyOpenings"), openingsLayer: $("openingsLayer"),
     snapToggle: $("snapToggle"),
@@ -235,16 +236,25 @@
 
     // Furniture — reconcile DOM
     const seen = new Set();
+    const ordered = [];
     for (const p of state.pieces) {
       seen.add(p.id);
-      let node = els.floor.querySelector(`[data-id="${p.id}"]`);
+      let node = els.floor.querySelector(`.piece[data-id="${p.id}"]`);
       if (!node) node = createPieceNode(p);
       positionPiece(node, p, s);
+      ordered.push(node);
     }
     // remove stale nodes
     els.floor.querySelectorAll(".piece").forEach((n) => {
       if (!seen.has(n.dataset.id)) n.remove();
     });
+    // Pieces all share one z-index, so DOM order is paint order: the last
+    // entry in state.pieces lands on top. Re-append only when it drifts,
+    // since moving a node mid-drag would break its pointer capture.
+    const current = [...els.floor.querySelectorAll(".piece")];
+    if (current.some((n, i) => n !== ordered[i])) {
+      for (const n of ordered) els.floor.appendChild(n);
+    }
 
     reconcileOpenings(s);
     renderList();
@@ -377,11 +387,14 @@
   function renderList() {
     els.pieceList.innerHTML = "";
     els.emptyPieces.style.display = state.pieces.length ? "none" : "block";
-    for (const p of state.pieces) {
+    els.orderHint.hidden = state.pieces.length < 2;
+    // Shown front-most first, like a layers panel — the reverse of paint order.
+    for (const p of state.pieces.slice().reverse()) {
       const li = document.createElement("li");
       li.className = "piece-item" + (p.id === selectedId ? " selected" : "");
       li.dataset.id = p.id;
       li.innerHTML = `
+        <button type="button" class="drag-handle" title="Drag to reorder, or use the arrow keys. With a piece selected: [ and ] to step, { and } to send fully back or front." aria-label="Reorder ${escapeAttr(p.label)}">${ICON.grip}</button>
         <input type="color" class="swatch" value="${p.color}" title="Change color" aria-label="Color for ${escapeAttr(p.label)}" />
         <div class="piece-main">
           <input class="piece-label-input" value="${escapeAttr(p.label)}" maxlength="24" aria-label="Label" />
@@ -423,11 +436,25 @@
         p.d = Math.max(0.01, toMeters(parseFloat(e.target.value) || 0));
         clampPiece(p); save(); render();
       });
+      const handle = li.querySelector(".drag-handle");
+      handle.addEventListener("pointerdown", (e) => startListDrag(e, li));
+      handle.addEventListener("keydown", (e) => {
+        // Up in the list is toward the front, i.e. later in the paint order.
+        const delta = e.key === "ArrowUp" ? 1 : e.key === "ArrowDown" ? -1 : 0;
+        if (!delta) return;
+        e.preventDefault();
+        if (movePiece(p, delta)) {
+          els.pieceList
+            .querySelector(`.piece-item[data-id="${p.id}"] .drag-handle`)
+            ?.focus();
+        }
+      });
       li.querySelector(".act-rotate").addEventListener("click", () => rotatePiece(p));
       li.querySelector(".act-dupe").addEventListener("click", () => duplicatePiece(p));
       li.querySelector(".act-del").addEventListener("click", () => removePiece(p.id));
       li.addEventListener("click", (e) => {
         if (e.target.closest("button, input")) return;
+        if (performance.now() - ldragEndedAt < 300) return;  // tail of a reorder
         select(p.id);
       });
       els.pieceList.appendChild(li);
@@ -435,6 +462,7 @@
   }
 
   const ICON = {
+    grip: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>`,
     door: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 21h16M7 21V4h8v17M13 12v.01"/><path d="M15 4a5 5 0 0 1 5 5v12" stroke-opacity="0.5"/></svg>`,
     window: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M12 4v16M4 12h16"/></svg>`,
     flip: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg>`,
@@ -520,6 +548,18 @@
     selectedId = p.id;
     save(); render();
   }
+  /* Shift a piece through the paint order. delta > 0 moves it toward the
+     front (drawn on top), delta < 0 toward the back. */
+  function movePiece(p, delta) {
+    const i = state.pieces.indexOf(p);
+    if (i < 0) return false;
+    const j = Math.max(0, Math.min(state.pieces.length - 1, i + delta));
+    if (i === j) return false;
+    state.pieces.splice(i, 1);
+    state.pieces.splice(j, 0, p);
+    save(); render();
+    return true;
+  }
   function removePiece(id) {
     state.pieces = state.pieces.filter((p) => p.id !== id);
     if (selectedId === id) selectedId = null;
@@ -589,6 +629,69 @@
     drag.node.removeEventListener("pointercancel", endDrag);
     drag = null;
     save();
+  }
+
+  /* ---- Reordering the piece list. The dragged row is moved through the DOM
+       live as the pointer passes its neighbours' midpoints, then the resulting
+       order is written back to state on release. ---- */
+  let ldrag = null;
+  let ldragEndedAt = -Infinity;
+  function startListDrag(e, li) {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.focus();
+    ldrag = { li, pointerId: e.pointerId };
+    li.classList.add("reordering");
+    els.pieceList.classList.add("is-reordering");
+    // Listen on the window rather than capturing the pointer: re-inserting the
+    // dragged row into the DOM would release a capture held on it, and the
+    // rest of the gesture would then be delivered somewhere else entirely.
+    window.addEventListener("pointermove", onListDrag);
+    window.addEventListener("pointerup", endListDrag);
+    window.addEventListener("pointercancel", endListDrag);
+  }
+  function onListDrag(e) {
+    if (!ldrag || e.pointerId !== ldrag.pointerId) return;
+    e.preventDefault();
+    const list = els.pieceList;
+    // Nudge the list when dragging against either edge of its scroll area.
+    const lr = list.getBoundingClientRect();
+    if (e.clientY < lr.top + 28) list.scrollTop -= 8;
+    else if (e.clientY > lr.bottom - 28) list.scrollTop += 8;
+
+    const dragged = ldrag.li;
+    for (const other of list.querySelectorAll(".piece-item")) {
+      if (other === dragged) continue;
+      const r = other.getBoundingClientRect();
+      const mid = r.top + r.height / 2;
+      const otherIsAbove = !!(dragged.compareDocumentPosition(other) &
+                              Node.DOCUMENT_POSITION_PRECEDING);
+      if (otherIsAbove && e.clientY < mid) { list.insertBefore(dragged, other); break; }
+      if (!otherIsAbove && e.clientY > mid) { list.insertBefore(dragged, other.nextSibling); break; }
+    }
+  }
+  function endListDrag(e) {
+    if (!ldrag || (e && e.pointerId !== ldrag.pointerId)) return;
+    window.removeEventListener("pointermove", onListDrag);
+    window.removeEventListener("pointerup", endListDrag);
+    window.removeEventListener("pointercancel", endListDrag);
+    ldrag.li.classList.remove("reordering");
+    els.pieceList.classList.remove("is-reordering");
+    ldrag = null;
+    ldragEndedAt = performance.now();   // swallow the click this gesture trails
+    commitListOrder();
+  }
+  function commitListOrder() {
+    const byId = new Map(state.pieces.map((p) => [p.id, p]));
+    const next = [...els.pieceList.querySelectorAll(".piece-item")]
+      .map((n) => byId.get(n.dataset.id))
+      .filter(Boolean)
+      .reverse();                          // list is front-first, state is back-first
+    if (next.length !== state.pieces.length) { render(); return; }  // lost a row somehow
+    const changed = next.some((p, i) => p !== state.pieces[i]);
+    state.pieces = next;
+    if (changed) save();
+    render();
   }
 
   /* ---- Dragging an opening: it slides along its wall and snaps to whichever
@@ -740,6 +843,10 @@
       if (p) {
         if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removePiece(p.id); }
         else if (e.key === "r" || e.key === "R") { rotatePiece(p); }
+        else if (e.key === "]") { movePiece(p, 1); }
+        else if (e.key === "[") { movePiece(p, -1); }
+        else if (e.key === "}") { movePiece(p, state.pieces.length); }
+        else if (e.key === "{") { movePiece(p, -state.pieces.length); }
         else if (e.key === "ArrowLeft")  { p.x -= nudge; clampPiece(p); save(); render(); }
         else if (e.key === "ArrowRight") { p.x += nudge; clampPiece(p); save(); render(); }
         else if (e.key === "ArrowUp")    { p.y -= nudge; clampPiece(p); save(); render(); }
