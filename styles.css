@@ -222,12 +222,8 @@ input:focus-visible {
 .unit-suffix { color: var(--muted); font-size: 13px; padding-bottom: 9px; white-space: nowrap; }
 
 .room-meta { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
-.sub-label {
-  margin: 14px 0 6px; font-size: 11px; font-weight: 600;
-  letter-spacing: 0.03em; color: var(--muted);
-}
 
-/* Segmented pickers (room shape, piece type) */
+/* Segmented picker (piece type) */
 .seg-toggle {
   display: flex; background: var(--surface-2);
   border: 1px solid var(--line); border-radius: 9px; padding: 3px;
@@ -244,22 +240,6 @@ input:focus-visible {
   background: var(--accent); color: #fff; box-shadow: var(--shadow-sm);
 }
 :root[data-theme="dark"] .seg-toggle button.is-active { color: var(--surface-2); }
-
-/* Which corner of the rectangle gets cut away for an L-shaped room */
-.corner-pick {
-  display: grid; grid-template-columns: repeat(4, 34px); gap: 6px; margin-bottom: 12px;
-}
-.corner-pick button {
-  height: 34px; border-radius: 8px; cursor: pointer;
-  border: 1px solid var(--line); background: var(--surface-2); color: var(--faint);
-  line-height: 0; display: grid; place-items: center;
-}
-.corner-pick svg { fill: currentColor; }
-.corner-pick button:hover { border-color: var(--accent); color: var(--accent); }
-.corner-pick button.is-active {
-  border-color: var(--accent); color: var(--accent); background: var(--accent-wash);
-}
-:root[data-theme="dark"] .corner-pick button.is-active { background: rgba(95,182,196,0.14); }
 
 .custom-actions {
   display: flex; align-items: center; justify-content: space-between;
@@ -436,6 +416,27 @@ input:focus-visible {
 .snap-toggle input { accent-color: var(--accent); width: 15px; height: 15px; }
 .zoom { display: inline-flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
 
+/* The sketch-mode command bar, in place of the usual quiet toolbar */
+.draw-bar[hidden] { display: none; }   /* a class display rule outranks [hidden] */
+.draw-bar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  margin: 0 18px 8px; padding: 8px 10px 8px 14px;
+  border: 1px solid var(--accent); border-radius: 10px;
+  background: var(--accent-wash);
+}
+:root[data-theme="dark"] .draw-bar { background: var(--surface); }
+.draw-msg { font-size: 13px; color: var(--accent-ink); }
+.draw-msg.warn { color: var(--danger); font-weight: 600; }
+.draw-acts { display: inline-flex; align-items: center; gap: 6px; }
+.draw-acts .text-btn { background: transparent; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-wide { width: 100%; margin-top: 10px; }
+.btn-wide.is-active { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+.shape-hint { margin-top: 12px; }
+
 .stage-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; place-items: center; padding: 24px; }
 .stage { display: grid; place-items: center; }
 
@@ -443,6 +444,12 @@ input:focus-visible {
    The sheet itself — fill, grid, outline, wall dimensions — is drawn in the
    room layer, so a non-rectangular outline can clip its own grid. */
 .floor { position: relative; }
+/* The plan holds everything drawn in room coordinates. It slides inside the
+   floor window so an outline being dragged or drawn can run outside the room's
+   own bounding box without the sheet re-centring under the pointer. */
+.plan { position: absolute; top: 0; left: 0; width: 0; height: 0; }
+.floor.is-drawing .piece,
+.floor.is-drawing .opening-hit { opacity: 0.35; pointer-events: none; }
 
 .room-layer {
   position: absolute; top: 0; left: 0;
@@ -475,30 +482,81 @@ input:focus-visible {
 
 /* Wall dimension chips */
 .dim-bg { fill: var(--surface-2); }
+/* The wall being dragged, or a wall being drawn, calls its length out louder */
+.dim-bg.live { fill: var(--accent); }
+.dim-text.live { fill: #fff; }
+:root[data-theme="dark"] .dim-text.live { fill: var(--surface-2); }
 .dim-text {
   font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 500;
   fill: var(--accent-ink); letter-spacing: 0.02em;
 }
 
-/* Corner handles for a custom outline */
+/* ---------- Reshaping the outline by hand ----------
+   Every wall is a drag strip and every corner a handle, in all shape modes.
+   They sit quiet until the pointer finds them so the plan still reads as a
+   drawing rather than a control panel. */
+.wall-hit {
+  position: absolute; top: 0; left: 0; z-index: 1;
+  touch-action: none; transform-origin: 50% 50%;
+  display: grid; place-items: center;
+}
+.wall-hit::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%;
+  height: 3px; transform: translateY(-50%); border-radius: 2px;
+  background: var(--accent); opacity: 0; transition: opacity 0.12s ease;
+}
+.wall-hit:hover::before { opacity: 0.5; }
+.wall-hit.dragging::before { opacity: 1; }
+.wall-add {
+  position: absolute; top: 50%; left: 50%;
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 1px dashed var(--accent); background: var(--surface-2); color: var(--accent);
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; line-height: 1;
+  cursor: pointer; opacity: 0; transition: opacity 0.12s ease;
+}
+.wall-hit:hover .wall-add { opacity: 1; }
+.wall-add:hover { background: var(--accent); color: var(--surface-2); border-style: solid; }
+.wall-hit.dragging .wall-add { opacity: 0; }
+
 .vertex-hit {
   position: absolute; top: 0; left: 0; z-index: 6;
   width: 14px; height: 14px; border-radius: 50%;
   border: 1.5px solid var(--accent); background: var(--surface-2);
   cursor: grab; touch-action: none;
   box-shadow: var(--shadow-sm);
+  opacity: 0.5; transition: opacity 0.12s ease, background 0.12s ease;
 }
-.vertex-hit:hover { background: var(--accent); }
-.vertex-hit.selected { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
-.vertex-hit.dragging { cursor: grabbing; background: var(--accent); }
-.vertex-hit.mid {
-  border-style: dashed; color: var(--accent);
-  display: grid; place-items: center;
-  font-size: 13px; font-weight: 700; line-height: 1;
-  cursor: pointer; opacity: 0.55;
+.floor:hover .vertex-hit { opacity: 1; }
+.vertex-hit:hover { background: var(--accent); opacity: 1; }
+.vertex-hit.selected { background: var(--accent); opacity: 1; box-shadow: 0 0 0 3px var(--accent-wash); }
+.vertex-hit.dragging { cursor: grabbing; background: var(--accent); opacity: 1; }
+/* The corner a dragged one is about to merge with */
+.vertex-hit.weld {
+  opacity: 1; background: var(--accent); border-style: dashed;
+  box-shadow: 0 0 0 5px var(--accent-wash);
 }
-.vertex-hit.mid:hover { opacity: 1; background: var(--accent-wash); }
-:root[data-theme="dark"] .vertex-hit.mid:hover { background: rgba(95,182,196,0.18); }
+
+/* ---------- Sketching an outline ---------- */
+.sketch-bg { fill: var(--surface-2); opacity: 0.55; }
+.sketch-ghost {
+  fill: none; stroke: var(--faint); stroke-width: 1.5;
+  stroke-dasharray: 3 5; opacity: 0.7;
+}
+.sketch-fill { fill: var(--accent); opacity: 0.07; stroke: none; }
+.sketch-fill.armed { opacity: 0.14; }
+.sketch-line {
+  fill: none; stroke: var(--accent); stroke-width: 2.5;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+.sketch-band {
+  fill: none; stroke: var(--accent); stroke-width: 2;
+  stroke-dasharray: 6 5; opacity: 0.75; stroke-linecap: round;
+}
+.sketch-band.closing { stroke-dasharray: none; opacity: 1; }
+.sketch-dot { fill: var(--surface-2); stroke: var(--accent); stroke-width: 2; }
+.sketch-dot.start { fill: var(--surface-2); stroke-width: 2.5; }
+.sketch-dot.start.armed { fill: var(--accent); }
 
 /* Doors & windows — graphics drawn in an SVG overlay, with a separate
    transparent hit box per opening for dragging/selection. */
@@ -514,7 +572,7 @@ input:focus-visible {
 .win-body { stroke: rgba(91, 133, 166, 0.42); stroke-width: 7; }
 .win-line { stroke: #5B85A6; stroke-width: 1.5; }
 .opening-hit {
-  position: absolute; top: 0; left: 0; z-index: 1;
+  position: absolute; top: 0; left: 0; z-index: 2;
   cursor: grab; touch-action: none; border-radius: 3px;
   /* Placed by its center and spun about that center, so it stays on top of the
      door graphic whichever direction the wall runs. */
@@ -527,7 +585,7 @@ input:focus-visible {
 
 /* Furniture */
 .piece {
-  position: absolute; top: 0; left: 0; z-index: 2;
+  position: absolute; top: 0; left: 0; z-index: 3;
   border-radius: 4px;
   border: 1.5px solid rgba(0,0,0,0.22);
   display: flex; flex-direction: column; align-items: center; justify-content: center;

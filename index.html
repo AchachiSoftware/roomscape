@@ -44,12 +44,6 @@
       <!-- Room -->
       <section class="panel">
         <h2 class="panel-title">Room / wall</h2>
-        <div class="seg-toggle" id="shapeToggle" role="group" aria-label="Room shape">
-          <button type="button" data-shape="rect" class="is-active">Rectangle</button>
-          <button type="button" data-shape="l">L-shaped</button>
-          <button type="button" data-shape="custom">Custom</button>
-        </div>
-
         <div id="rectFields">
           <div class="field-row">
             <label class="field">
@@ -65,44 +59,18 @@
           </div>
         </div>
 
-        <div id="lFields" hidden>
-          <p class="sub-label">Corner to cut away</p>
-          <!-- Each glyph is the resulting floor plan, so the shape is the label -->
-          <div class="corner-pick" id="cornerPick" role="group" aria-label="Cut-out corner">
-            <button type="button" data-corner="tl" title="Cut the top-left corner" aria-label="Top left">
-              <svg viewBox="0 0 20 20" width="18" height="18"><path d="M8 2h10v16H2V8h6z" /></svg>
-            </button>
-            <button type="button" data-corner="tr" title="Cut the top-right corner" aria-label="Top right">
-              <svg viewBox="0 0 20 20" width="18" height="18"><path d="M2 2h10v6h6v10H2z" /></svg>
-            </button>
-            <button type="button" data-corner="bl" title="Cut the bottom-left corner" aria-label="Bottom left">
-              <svg viewBox="0 0 20 20" width="18" height="18"><path d="M2 2h16v16H8v-6H2z" /></svg>
-            </button>
-            <button type="button" data-corner="br" title="Cut the bottom-right corner" aria-label="Bottom right">
-              <svg viewBox="0 0 20 20" width="18" height="18"><path d="M2 2h16v10h-6v6H2z" /></svg>
-            </button>
-          </div>
-          <div class="field-row">
-            <label class="field">
-              <span>Cut-out width</span>
-              <input id="notchW" type="number" min="0.1" step="any" inputmode="decimal" />
-            </label>
-            <span class="times" aria-hidden="true">×</span>
-            <label class="field">
-              <span>Cut-out depth</span>
-              <input id="notchL" type="number" min="0.1" step="any" inputmode="decimal" />
-            </label>
-            <span class="unit-suffix" data-unit-label>ft</span>
-          </div>
-        </div>
-
         <div id="customFields" hidden>
-          <p class="empty-hint">Drag the corner handles on the plan to reshape the room. Tap a <span class="kbd">+</span> on a wall to add a corner; select a corner and press <span class="kbd">Delete</span> to remove it.</p>
           <div class="custom-actions">
             <span class="hint-count mono" id="pointCount">4 corners</span>
             <button type="button" id="resetPoly" class="link-btn">Reset to rectangle</button>
           </div>
         </div>
+
+        <p class="empty-hint shape-hint">The room is whatever outline you give it. Drag any <strong>wall</strong> to move it, drag a <strong>corner</strong> to pull the shape about, or hit the <span class="kbd">+</span> on a wall to add a corner. Drop a corner onto its neighbour and the two join up.</p>
+        <button type="button" id="drawOutline" class="btn btn-ghost btn-wide">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20h16"/><path d="M14.5 4.5l5 5L9 20H4v-5z"/></svg>
+          Draw the outline
+        </button>
 
         <p class="room-meta"><span id="roomArea">—</span> · <span id="pieceCount">0 pieces</span></p>
       </section>
@@ -166,15 +134,28 @@
           <button type="button" id="zoomIn" class="icon-btn sm" aria-label="Zoom in">+</button>
         </div>
       </div>
+      <div class="draw-bar" id="drawBar" hidden>
+        <span class="draw-msg" id="drawMsg">Click to drop the first corner.</span>
+        <div class="draw-acts">
+          <button type="button" id="drawUndo" class="text-btn">Undo corner</button>
+          <button type="button" id="drawCancel" class="text-btn">Cancel</button>
+          <button type="button" id="drawFinish" class="btn btn-primary btn-sm">Close the room</button>
+        </div>
+      </div>
       <div class="stage-scroll" id="stageScroll">
         <div class="stage" id="stage">
           <div class="floor" id="floor" aria-label="Floor plan">
-            <svg class="room-layer" id="roomLayer" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>
-            <svg class="openings-layer" id="openingsLayer" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>
+            <!-- Everything on the plan is positioned in room coordinates; the
+                 plan slides inside the floor window so a room being reshaped
+                 can grow past its own bounding box without the sheet jumping. -->
+            <div class="plan" id="plan">
+              <svg class="room-layer" id="roomLayer" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>
+              <svg class="openings-layer" id="openingsLayer" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>
+            </div>
           </div>
         </div>
       </div>
-      <p class="stage-hint">Drag pieces to arrange · everything saves automatically</p>
+      <p class="stage-hint">Drag pieces to arrange · drag walls and corners to reshape the room · everything saves automatically</p>
       <p class="stage-hint keys">With something selected:
         <span class="kbd">R</span> rotate ·
         <span class="kbd">L</span> lock ·

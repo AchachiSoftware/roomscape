@@ -7,13 +7,25 @@ scaled furniture around to see how it fits — built for planning a new apartmen
 
 ## Features
 
-- **Rooms that aren't rectangles** — pick **Rectangle**, **L-shaped** (choose
-  which corner is cut away and how deep), or **Custom**. In custom mode the
-  outline gets draggable corner handles: drag a corner to move it, tap the `+`
-  on a wall to add one, select a corner and press `Delete` to drop it. Every
-  wall is labelled with its own length, the grid clips to the outline, and area
-  is computed from the real polygon. A piece that no longer fits inside the
-  outline is flagged with a red dashed edge.
+- **Any room shape, reshaped by hand** — the room is whatever outline you give
+  it, and you edit it on the plan rather than in a form. Drag a **wall** and it
+  slides along its own normal while the walls it meets stretch to follow; drag
+  a **corner** to pull the outline about; hit the `+` that appears on a wall to
+  split it, or double-click the wall at the spot you want the new corner. Drop
+  a corner onto its neighbour and the two **weld together**, dropping the wall
+  between them. A drag that would tangle the walls is refused rather than
+  applied, and `Esc` abandons one mid-gesture. Every wall is labelled with its
+  own length, the grid clips to the outline, and area is computed from the real
+  polygon. A piece that no longer fits inside the outline gets a red dashed edge.
+- **Or draw it from scratch** — **Draw the outline** turns the stage into a
+  sketch pad: click each corner and the walls follow, squaring themselves up
+  unless you hold `Shift`, with every wall's length called out as you go.
+  Closing the loop on the first corner (or `Enter`) commits the room; the room
+  you're replacing stays on screen as a faint tracing guide. A first visit opens
+  straight into it, so the first thing you do is draw your own place.
+- **Rectangles stay editable as numbers** — while the outline still *is* a plain
+  rectangle, the panel offers width and length fields; the moment it isn't, they
+  give way to the corner count and a way back to a rectangle.
 - **Add furniture** — give a piece a label and its width × depth. Tap a preset
   (bed, sofa, dining table, desk…) to pre-fill common sizes.
 - **Closets** — switch the add form to **Closet** for closet presets (reach-in,
@@ -42,7 +54,8 @@ scaled furniture around to see how it fits — built for planning a new apartmen
   center crosshair for quick eyeballing of halves.
 - **Autosaves** — your layout persists in the browser (localStorage).
 - **Light & dark** themes; keyboard support (arrows nudge, `R` rotates,
-  `Delete` removes the selected piece).
+  `Delete` removes the selected piece or corner, `Esc` backs out of whatever is
+  in progress).
 
 ## Running it
 
@@ -69,10 +82,15 @@ roomscape/
 ## Notes
 
 - Geometry is stored in meters internally; units are a display concern only.
-- The room is always a polygon — rectangles and L-shapes are generated from
-  parameters, custom outlines keep an editable vertex list. Walls, openings and
-  clamping all work off that polygon, so nothing assumes four square corners.
-  Openings attach to a wall by edge index plus an offset along it.
+- The room is always a polygon. A plain rectangle is stored as width × length
+  so the number fields keep working; anything else keeps a vertex list, and the
+  app drops back to the rectangle form on its own whenever an edit happens to
+  leave a rectangle behind. Walls, openings and clamping all work off that
+  polygon, so nothing assumes four square corners.
+- Openings attach to a wall by edge index plus an offset along it, so any edit
+  that adds or removes walls re-homes them by where they sat on the plan.
+- An outline is re-origined to (0, 0) after every edit, with the furniture
+  carried along, which is what lets you drag the left or top wall outward.
 - Furniture colors come from a fixed muted categorical palette kept distinct
   from the UI accent so pieces read clearly against the floor.
 - Fonts (`Hanken Grotesk`, `JetBrains Mono`) load from Google Fonts; the app

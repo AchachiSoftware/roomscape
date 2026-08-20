@@ -80,10 +80,13 @@
   /* ---- Default state ---- */
   const defaultState = () => ({
     unit: "ft",
+    /* The outline is drawn and dragged on the plan, so "shape" is only about
+       how it is stored: a plain rectangle keeps its width and length (which
+       is what the number fields edit), anything else keeps a vertex list.
+       Nothing switches modes by hand — the shape follows the polygon. */
     room: {
-      shape: "rect",                                   // rect | l | custom
+      shape: "rect",                                   // rect | custom
       w: 12 * M_PER_FT, l: 14 * M_PER_FT,              // bounding box
-      notch: { w: 4 * M_PER_FT, l: 4 * M_PER_FT, corner: "tr" },  // L-shape cut-out
       poly: null,                                      // vertex list when shape === custom
     },
     snap: true,
@@ -93,22 +96,35 @@
     openings: [],   // { id, kind:'door'|'window', edge, pos(m), width(m), flip, out, locked }
   });
 
-  let state = load() || defaultState();
+  const saved = load();
+  const firstVisit = !saved;
+  let state = saved || defaultState();
   let selectedId = null;
   let baseScale = 40;         // px per meter, recomputed on render
   let addType = "furniture";  // which preset group / piece type the add form builds
 
-  /* Derived room geometry, rebuilt whenever the room changes. */
-  const R = { poly: [], edges: [], w: 1, l: 1, area: 0, names: [] };
+  /* Derived room geometry, rebuilt whenever the room changes. x0/y0 are the
+     outline's bounding-box origin. Settled outlines always start at (0,0);
+     one being dragged is allowed to run negative until the gesture ends and
+     re-origins it, so the plan can't shift under the pointer mid-drag. */
+  const R = { poly: [], edges: [], x0: 0, y0: 0, w: 1, l: 1, area: 0, names: [] };
+
+  /* The view frame: the slab of plan the floor element covers, in meters.
+     Normally exactly the room's bounding box; while an outline is being
+     dragged or drawn it is frozen larger than the room so the sheet stays
+     put on screen while the room under it changes size. */
+  const V = { ox: 0, oy: 0, w: 1, l: 1 };
+  let frozenView = null;   // { ox, oy, w, l, scale } for the length of a gesture
 
   /* ---- Element handles ---- */
   const $ = (id) => document.getElementById(id);
   const els = {
-    shapeToggle: $("shapeToggle"),
-    rectFields: $("rectFields"), lFields: $("lFields"), customFields: $("customFields"),
+    rectFields: $("rectFields"), customFields: $("customFields"),
     roomW: $("roomW"), roomL: $("roomL"),
-    notchW: $("notchW"), notchL: $("notchL"), cornerPick: $("cornerPick"),
     resetPoly: $("resetPoly"), pointCount: $("pointCount"),
+    drawOutline: $("drawOutline"),
+    drawBar: $("drawBar"), drawMsg: $("drawMsg"),
+    drawUndo: $("drawUndo"), drawFinish: $("drawFinish"), drawCancel: $("drawCancel"),
     roomArea: $("roomArea"), pieceCount: $("pieceCount"),
     typeToggle: $("typeToggle"),
     presets: $("presets"), addForm: $("addForm"),
@@ -120,7 +136,8 @@
     roomLayer: $("roomLayer"), openingsLayer: $("openingsLayer"),
     snapToggle: $("snapToggle"),
     zoomIn: $("zoomIn"), zoomOut: $("zoomOut"), zoomFit: $("zoomFit"),
-    stageScroll: $("stageScroll"), stage: $("stage"), floor: $("floor"),
+    stageScroll: $("stageScroll"), stage: $("stage"),
+    floor: $("floor"), plan: $("plan"),
     themeToggle: $("themeToggle"),
     unitBtns: document.querySelectorAll(".unit-toggle button"),
     unitLabels: document.querySelectorAll("[data-unit-label]"),
@@ -164,12 +181,17 @@
 
   /* Bring a save from an older schema up to the current one. */
   function migrate(s) {
-    const d = defaultState();
     if (!Array.isArray(s.openings)) s.openings = [];
     if (!s.room.shape) s.room.shape = "rect";
-    if (!s.room.notch) s.room.notch = d.room.notch;
     if (!Array.isArray(s.room.poly)) s.room.poly = null;
     if (s.room.shape === "custom" && !s.room.poly) s.room.shape = "rect";
+    // L-shaped rooms used to be a template with a cut-out corner. They are
+    // just outlines now, so an old save is turned into the outline it drew.
+    if (s.room.shape === "l") {
+      s.room.poly = lShapePoly(s.room.w, s.room.l, s.room.notch);
+      s.room.shape = s.room.poly ? "custom" : "rect";
+    }
+    delete s.room.notch;
 
     for (const p of s.pieces) {
       if (p.type !== "closet") p.type = "furniture";
@@ -189,23 +211,26 @@
 
   /* ================= Room polygon ================= */
   /* Vertices for the current shape, in meters, in the polygon's own frame. */
-  function buildPoly() {
-    const rm = state.room;
+  const buildPoly = () => buildPolyFrom(state.room);
+  function buildPolyFrom(rm) {
     if (rm.shape === "custom" && Array.isArray(rm.poly) && rm.poly.length >= 3) {
       return rm.poly.map((p) => [p[0], p[1]]);
     }
     const w = Math.max(0.1, rm.w), l = Math.max(0.1, rm.l);
-    if (rm.shape === "l") {
-      const nw = Math.max(0.05, Math.min(rm.notch.w, w - 0.05));
-      const nl = Math.max(0.05, Math.min(rm.notch.l, l - 0.05));
-      switch (rm.notch.corner) {
-        case "tl": return [[nw, 0], [w, 0], [w, l], [0, l], [0, nl], [nw, nl]];
-        case "tr": return [[0, 0], [w - nw, 0], [w - nw, nl], [w, nl], [w, l], [0, l]];
-        case "bl": return [[0, 0], [w, 0], [w, l], [nw, l], [nw, l - nl], [0, l - nl]];
-        default:   return [[0, 0], [w, 0], [w, l - nl], [w - nw, l - nl], [w - nw, l], [0, l]];
-      }
-    }
     return [[0, 0], [w, 0], [w, l], [0, l]];
+  }
+
+  /* The old L-shaped template, kept only to convert saves that still use it. */
+  function lShapePoly(w, l, notch) {
+    if (!notch || !(w > 0) || !(l > 0)) return null;
+    const nw = Math.max(0.05, Math.min(notch.w, w - 0.05));
+    const nl = Math.max(0.05, Math.min(notch.l, l - 0.05));
+    switch (notch.corner) {
+      case "tl": return [[nw, 0], [w, 0], [w, l], [0, l], [0, nl], [nw, nl]];
+      case "tr": return [[0, 0], [w - nw, 0], [w - nw, nl], [w, nl], [w, l], [0, l]];
+      case "bl": return [[0, 0], [w, 0], [w, l], [nw, l], [nw, l - nl], [0, l - nl]];
+      default:   return [[0, 0], [w, 0], [w, l - nl], [w - nw, l - nl], [w - nw, l], [0, l]];
+    }
   }
 
   /* Shoelace area. Positive means the ring runs clockwise on screen (y down),
@@ -218,6 +243,99 @@
     return a / 2;
   }
 
+  /* ---- Outline predicates ------------------------------------------------
+     Reshaping the outline by hand needs answers the parametric shapes never
+     had to give: where the polygon actually sits, and whether a half-finished
+     drag has turned it into something that is no longer a room. A drag that
+     would tangle the walls is simply refused, which is why the shape can't be
+     knotted into a bow-tie any more. */
+  const clonePoly = (poly) => poly.map((p) => [p[0], p[1]]);
+
+  function polyBBox(poly) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of poly) {
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+    return { x0, y0, x1, y1, w: x1 - x0, l: y1 - y0 };
+  }
+
+  /* Two walls that aren't neighbours crossing means the outline is tangled,
+     and nothing downstream — area, grid clipping, inward normals — survives it. */
+  function polySelfIntersects(poly) {
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const i2 = (i + 1) % n;
+      for (let j = i + 1; j < n; j++) {
+        const j2 = (j + 1) % n;
+        if (j === i2 || j2 === i) continue;          // shares a corner
+        if (segCross(poly[i], poly[i2], poly[j], poly[j2])) return true;
+      }
+    }
+    return false;
+  }
+
+  const MIN_WALL_M = 0.12;      // below this a wall is a slip, not a wall
+  const MIN_AREA_M = 0.25;
+
+  /* Is this still a room? `melt` names one corner that is allowed to sit on
+     top of its neighbour: that is a weld in progress, and the wall between
+     them disappears when the drag is released. */
+  function polyValid(poly, melt = -1) {
+    if (!Array.isArray(poly) || poly.length < 3) return false;
+    for (const p of poly) if (!isFinite(p[0]) || !isFinite(p[1])) return false;
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      if (i === melt || (i + 1) % n === melt) continue;
+      const a = poly[i], b = poly[(i + 1) % n];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < MIN_WALL_M) return false;
+    }
+    // A wall that doubles straight back over the one before it is a zero-width
+    // spur, not a corner. The crossing test above can't see it — two collinear
+    // segments never "cross" — so it is caught here.
+    for (let i = 0; i < n; i++) {
+      const a = poly[(i - 1 + n) % n], b = poly[i], c = poly[(i + 1) % n];
+      const l1 = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const l2 = Math.hypot(c[0] - b[0], c[1] - b[1]);
+      if (l1 < 1e-6 || l2 < 1e-6) continue;           // a weld in progress
+      const dot = ((b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1])) / (l1 * l2);
+      if (dot < -0.999) return false;
+    }
+    const bb = polyBBox(poly);
+    if (bb.w < 0.3 || bb.l < 0.3) return false;
+    if (Math.abs(polyArea(poly)) < MIN_AREA_M) return false;
+    return !polySelfIntersects(poly);
+  }
+
+  /* Where two infinite lines meet, or null when they run parallel. */
+  function lineIntersect(p1, p2, p3, p4) {
+    const d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0]);
+    if (Math.abs(d) < 1e-9) return null;
+    const t = ((p3[0] - p1[0]) * (p4[1] - p3[1]) - (p3[1] - p1[1]) * (p4[0] - p3[0])) / d;
+    return [p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t];
+  }
+
+  /* Slide one wall along its own normal, keeping it parallel to itself and
+     letting its two corners run along the walls they meet — the way a floor
+     plan behaves when you push a wall. Where the neighbouring wall is parallel
+     there is nothing to run along, so the corner just travels with the wall. */
+  function moveEdgePoly(poly, i, dist) {
+    const n = poly.length;
+    const iA = i, iB = (i + 1) % n;
+    const A = poly[iA], B = poly[iB];
+    const dx = B[0] - A[0], dy = B[1] - A[1];
+    const len = Math.hypot(dx, dy) || 1e-9;
+    const nx = -dy / len, ny = dx / len;
+    const A2 = [A[0] + nx * dist, A[1] + ny * dist];
+    const B2 = [B[0] + nx * dist, B[1] + ny * dist];
+    const out = clonePoly(poly);
+    out[iA] = lineIntersect(poly[(iA - 1 + n) % n], A, A2, B2) || A2;
+    out[iB] = lineIntersect(B, poly[(iB + 1) % n], A2, B2) || B2;
+    return out;
+  }
+
   /* Recompute every cached quantity that depends on the room outline. */
   function rebuildRoom() {
     let poly = buildPoly();
@@ -227,8 +345,10 @@
       if (state.room.shape === "custom") state.room.poly = poly.map((p) => [p[0], p[1]]);
     }
     R.poly = poly;
-    R.w = Math.max(0.1, ...poly.map((p) => p[0]));
-    R.l = Math.max(0.1, ...poly.map((p) => p[1]));
+    const bb = polyBBox(poly);
+    R.x0 = bb.x0; R.y0 = bb.y0;
+    R.w = Math.max(0.1, bb.w);
+    R.l = Math.max(0.1, bb.l);
     state.room.w = R.w;
     state.room.l = R.l;
     R.area = Math.abs(polyArea(poly));
@@ -330,24 +450,30 @@
   }
   function clampPiece(p) {
     const fp = footprint(p);
-    p.x = Math.max(0, Math.min(p.x, Math.max(0, R.w - fp.w)));
-    p.y = Math.max(0, Math.min(p.y, Math.max(0, R.l - fp.d)));
+    p.x = Math.max(R.x0, Math.min(p.x, R.x0 + Math.max(0, R.w - fp.w)));
+    p.y = Math.max(R.y0, Math.min(p.y, R.y0 + Math.max(0, R.l - fp.d)));
   }
 
   /* ---- Openings (doors/windows) attach to a wall at an offset along it ---- */
   const edgeOf = (o) => R.edges[o.edge] || R.edges[0];
+  /* An opening never draws wider than the wall it is on, but the width it was
+     given is kept intact: walls move now, and a door that had to squeeze onto
+     a short wall gets its full width back when that wall grows again. */
+  function openWidth(o) {
+    const e = edgeOf(o);
+    return e ? Math.min(o.width, e.len) : o.width;
+  }
   function clampOpening(o) {
     const e = edgeOf(o);
     if (!e) return;
-    o.width = Math.min(o.width, e.len);                // never wider than the wall
-    o.pos = Math.max(0, Math.min(o.pos, e.len - o.width));
+    o.pos = Math.max(0, Math.min(o.pos, Math.max(0, e.len - openWidth(o))));
   }
   /* Pixel geometry for a given scale: the opening's two jambs on the wall,
      the wall direction, and the inward normal. */
   function openingPx(o, s) {
     const e = edgeOf(o);
     const A = [(e.a[0] + e.ux * o.pos) * s, (e.a[1] + e.uy * o.pos) * s];
-    const len = o.width * s;
+    const len = openWidth(o) * s;
     const B = [A[0] + e.ux * len, A[1] + e.uy * len];
     return { A, B, ux: e.ux, uy: e.uy, nx: e.nx, ny: e.ny, len, ang: e.ang };
   }
@@ -369,65 +495,125 @@
   }
 
   /* ================= Rendering ================= */
+  const STAGE_PAD = 44;   // room for edge dimension labels
+  const stageRoom = () => ({
+    w: Math.max(120, els.stageScroll.clientWidth - STAGE_PAD * 2),
+    h: Math.max(120, els.stageScroll.clientHeight - STAGE_PAD * 2),
+  });
+
   function computeScale() {
-    const pad = 44; // room for edge dimension labels
-    const availW = Math.max(120, els.stageScroll.clientWidth - pad * 2);
-    const availH = Math.max(120, els.stageScroll.clientHeight - pad * 2);
+    if (frozenView) { baseScale = frozenView.scale; return; }
+    const avail = stageRoom();
     // Reserve margin so outward door swings stay on-screen: an outward door
     // reaches up to its own width beyond the wall.
     const outM = state.openings.reduce(
       (m, o) => (o.kind === "door" && o.out ? Math.max(m, o.width) : m), 0);
-    const fit = Math.min(availW / (R.w + 2 * outM), availH / (R.l + 2 * outM));
+    const fit = Math.min(avail.w / (R.w + 2 * outM), avail.h / (R.l + 2 * outM));
     baseScale = fit * state.zoom;
   }
 
-  function render() {
+  /* Which slab of plan the floor element covers. Normally the room's bounding
+     box exactly; a frozen frame (set while a wall or corner is being dragged)
+     wins, and drawing an outline gets the whole stage to work on. */
+  function updateFrame() {
     computeScale();
+    if (frozenView) {
+      V.ox = frozenView.ox; V.oy = frozenView.oy;
+      V.w = frozenView.w;   V.l = frozenView.l;
+      return;
+    }
+    if (DRAW.active) {
+      const avail = stageRoom();
+      const cw = Math.max(R.w, avail.w / baseScale);
+      const cl = Math.max(R.l, avail.h / baseScale);
+      V.ox = R.x0 - (cw - R.w) / 2; V.oy = R.y0 - (cl - R.l) / 2;
+      V.w = cw; V.l = cl;
+      return;
+    }
+    V.ox = R.x0; V.oy = R.y0; V.w = R.w; V.l = R.l;
+  }
+
+  /* Pin the frame for the length of a drag. The floor grows by the padding on
+     every side while the plan slides the other way by the same amount, so the
+     room stays exactly where it was on screen — and then has somewhere to grow
+     into as a wall is dragged outward, instead of the sheet re-centring itself
+     out from under the pointer on every pointer move. */
+  function freezeView() {
+    const s = baseScale, avail = stageRoom();
+    const padX = Math.max(0, Math.min((avail.w / s - R.w) / 2, R.w * 0.7));
+    const padY = Math.max(0, Math.min((avail.h / s - R.l) / 2, R.l * 0.7));
+    frozenView = {
+      ox: R.x0 - padX, oy: R.y0 - padY,
+      w: R.w + padX * 2, l: R.l + padY * 2, scale: s,
+    };
+  }
+
+  const planRect = () => els.plan.getBoundingClientRect();
+  /* Pointer position in room meters, against a rect captured when the gesture
+     began — the frame is frozen for the duration, so it stays valid. */
+  const ptM = (e, rect) => [
+    (e.clientX - rect.left) / baseScale,
+    (e.clientY - rect.top) / baseScale,
+  ];
+
+  function render(opts) {
+    updateFrame();
     const s = baseScale;
 
-    els.floor.style.width = R.w * s + "px";
-    els.floor.style.height = R.l * s + "px";
+    els.floor.style.width = round2(V.w * s) + "px";
+    els.floor.style.height = round2(V.l * s) + "px";
+    els.floor.classList.toggle("is-drawing", DRAW.active);
+    // Everything on the plan is positioned in room coordinates; the frame is
+    // applied once, here, by sliding the whole plan under the floor window.
+    els.plan.style.transform =
+      `translate(${round2(-V.ox * s)}px, ${round2(-V.oy * s)}px)`;
 
-    drawRoom(s);
+    if (DRAW.active) drawSketch(s); else drawRoom(s);
 
     // Furniture — reconcile DOM
     const seen = new Set();
     const ordered = [];
     for (const p of state.pieces) {
       seen.add(p.id);
-      let node = els.floor.querySelector(`.piece[data-id="${p.id}"]`);
+      let node = els.plan.querySelector(`.piece[data-id="${p.id}"]`);
       if (!node) node = createPieceNode(p);
       positionPiece(node, p, s);
       ordered.push(node);
     }
     // remove stale nodes
-    els.floor.querySelectorAll(".piece").forEach((n) => {
+    els.plan.querySelectorAll(".piece").forEach((n) => {
       if (!seen.has(n.dataset.id)) n.remove();
     });
     // Pieces all share one z-index, so DOM order is paint order: the last
     // entry in state.pieces lands on top. Re-append only when it drifts,
     // since moving a node mid-drag would break its pointer capture.
-    const current = [...els.floor.querySelectorAll(".piece")];
+    const current = [...els.plan.querySelectorAll(".piece")];
     if (current.some((n, i) => n !== ordered[i])) {
-      for (const n of ordered) els.floor.appendChild(n);
+      for (const n of ordered) els.plan.appendChild(n);
     }
 
     reconcileOpenings(s);
-    reconcileVertices(s);
-    renderList();
-    renderOpeningList();
+    reconcileHandles(s);
     renderMeta();
-    syncInputs();
+    // A live gesture repaints the plan on every pointer move. Rebuilding the
+    // side rails at that rate is wasted work, and the room panel would flicker
+    // between shapes while a wall is still mid-drag.
+    if (!(opts && opts.planOnly)) {
+      renderList();
+      renderOpeningList();
+      syncInputs();
+      syncDrawBar();
+    }
   }
+  const renderPlan = () => render({ planOnly: true });
 
   /* ---- The floor sheet: fill, grid, outline and wall dimensions, all drawn
        in one SVG so the grid can be clipped to a non-rectangular outline. ---- */
   function drawRoom(s) {
     const W = R.w * s, H = R.l * s;
-    const pts = R.poly.map(([x, y]) => `${x * s},${y * s}`).join(" ");
-    els.roomLayer.setAttribute("width", W);
-    els.roomLayer.setAttribute("height", H);
-    els.roomLayer.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const x0 = R.x0 * s, y0 = R.y0 * s;
+    const pts = R.poly.map(([x, y]) => `${round2(x * s)},${round2(y * s)}`).join(" ");
+    sizeLayer(els.roomLayer, s);
 
     // Grid: scale each axis to an EVEN number of cells so a real grid line
     // falls on the room's midline. Cell size is nudged toward the nominal
@@ -438,14 +624,15 @@
     const nx = evenCells(R.w, gridM, s);
     const ny = evenCells(R.l, gridM, s);
     const stepX = W / nx, stepY = H / ny;
+    const yA = round2(y0), yB = round2(y0 + H), xA = round2(x0), xB = round2(x0 + W);
     let minor = "", major = "";
     for (let i = 1; i < nx; i++) {
-      const x = round2(i * stepX);
-      if (i % majorMult) minor += `M${x} 0V${round2(H)}`; else major += `M${x} 0V${round2(H)}`;
+      const x = round2(x0 + i * stepX);
+      if (i % majorMult) minor += `M${x} ${yA}V${yB}`; else major += `M${x} ${yA}V${yB}`;
     }
     for (let j = 1; j < ny; j++) {
-      const y = round2(j * stepY);
-      if (j % majorMult) minor += `M0 ${y}H${round2(W)}`; else major += `M0 ${y}H${round2(W)}`;
+      const y = round2(y0 + j * stepY);
+      if (j % majorMult) minor += `M${xA} ${y}H${xB}`; else major += `M${xA} ${y}H${xB}`;
     }
 
     els.roomLayer.innerHTML =
@@ -454,8 +641,8 @@
       `<g clip-path="url(#roomClip)">` +
         `<path class="grid-minor" d="${minor}" />` +
         `<path class="grid-major" d="${major}" />` +
-        `<line class="center-rule" x1="${W / 2}" y1="0" x2="${W / 2}" y2="${H}" />` +
-        `<line class="center-rule" x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" />` +
+        `<line class="center-rule" x1="${round2(x0 + W / 2)}" y1="${yA}" x2="${round2(x0 + W / 2)}" y2="${yB}" />` +
+        `<line class="center-rule" x1="${xA}" y1="${round2(y0 + H / 2)}" x2="${xB}" y2="${round2(y0 + H / 2)}" />` +
       `</g>` +
       `<polygon class="room-outline" points="${pts}" />` +
       dimLabels(s);
@@ -471,16 +658,32 @@
       if (!e || e.len * s < 26) continue;              // too short to letter
       const mx = ((e.a[0] + e.b[0]) / 2) * s - e.nx * 15;
       const my = ((e.a[1] + e.b[1]) / 2) * s - e.ny * 15;
-      let deg = (e.ang * 180) / Math.PI;
-      if (deg > 90 || deg < -90) deg += 180;           // never upside down
-      const txt = fmtDim(e.len);
-      const w = txt.length * 7.2 + 10;
-      out += `<g transform="translate(${round2(mx)} ${round2(my)}) rotate(${round2(deg)})">` +
-             `<rect class="dim-bg" x="${round2(-w / 2)}" y="-9" width="${round2(w)}" height="18" rx="4" />` +
-             `<text class="dim-text" x="0" y="0" text-anchor="middle" dominant-baseline="central">${txt}</text>` +
-             `</g>`;
+      out += dimChip(mx, my, (e.ang * 180) / Math.PI, fmtDim(e.len),
+                     wdrag && wdrag.i === i ? " live" : "");
     }
     return out;
+  }
+
+  /* One measurement chip, laid along the wall it belongs to. */
+  function dimChip(x, y, deg, txt, extra = "") {
+    if (deg > 90 || deg < -90) deg += 180;             // never upside down
+    const w = txt.length * 7.2 + 10;
+    return `<g transform="translate(${round2(x)} ${round2(y)}) rotate(${round2(deg)})">` +
+           `<rect class="dim-bg${extra}" x="${round2(-w / 2)}" y="-9" width="${round2(w)}" height="18" rx="4" />` +
+           `<text class="dim-text${extra}" x="0" y="0" text-anchor="middle" dominant-baseline="central">${txt}</text>` +
+           `</g>`;
+  }
+
+  /* A layer is anchored on the plan origin and draws in plan pixels, so its box
+     is only ever a hint — anything outside it still paints. It is sized to reach
+     exactly the far edge of the frame and no further: a box that overhung the
+     floor would give the stage something to scroll to. */
+  function sizeLayer(layer, s) {
+    const w = round2(Math.max(1, (V.ox + V.w) * s));
+    const h = round2(Math.max(1, (V.oy + V.l) * s));
+    layer.setAttribute("width", w);
+    layer.setAttribute("height", h);
+    layer.setAttribute("viewBox", `0 0 ${w} ${h}`);
   }
 
   const round2 = (n) => Math.round(n * 100) / 100;
@@ -490,11 +693,11 @@
     const seen = new Set();
     for (const o of state.openings) {
       seen.add(o.id);
-      let node = els.floor.querySelector(`.opening-hit[data-id="${o.id}"]`);
+      let node = els.plan.querySelector(`.opening-hit[data-id="${o.id}"]`);
       if (!node) node = createOpeningHit(o);
       positionOpeningHit(node, o, s);
     }
-    els.floor.querySelectorAll(".opening-hit").forEach((n) => {
+    els.plan.querySelectorAll(".opening-hit").forEach((n) => {
       if (!seen.has(n.dataset.id)) n.remove();
     });
     drawOpenings(s);
@@ -506,7 +709,7 @@
     node.dataset.id = o.id;
     node.title = o.kind === "door" ? "Door — drag to a wall" : "Window — drag to a wall";
     node.addEventListener("pointerdown", (e) => startDragOpening(e, o, node));
-    els.floor.appendChild(node);
+    els.plan.appendChild(node);
     return node;
   }
 
@@ -523,7 +726,7 @@
     const w = Math.max(6, g.len);
     let depth, off;                              // off: center offset along the inward normal
     if (o.kind === "door") {
-      depth = Math.max(6, o.width * s);          // swing reaches one door-width off the wall
+      depth = Math.max(6, openWidth(o) * s);     // swing reaches one door-width off the wall
       off = (o.out ? -1 : 1) * depth / 2;        // sits wholly on the side it swings toward
     } else {
       depth = 18;                                // grab margin either side of a window
@@ -542,8 +745,7 @@
 
   /* Paint all door/window graphics into the shared SVG overlay. */
   function drawOpenings(s) {
-    els.openingsLayer.setAttribute("width", R.w * s);
-    els.openingsLayer.setAttribute("height", R.l * s);
+    sizeLayer(els.openingsLayer, s);
     let out = "";
     for (const o of state.openings) {
       const g = openingPx(o, s);
@@ -554,7 +756,7 @@
         // Door: hinge H, opposite jamb J, open leaf tip L perpendicular to the
         // wall. `flip` picks the hinge jamb, `out` picks the swing side; the
         // four combinations are every orientation a wall door can have.
-        const r = o.width * s;
+        const r = openWidth(o) * s;
         const dir = o.out ? -1 : 1;
         const H = o.flip ? g.B : g.A;
         const J = o.flip ? g.A : g.B;
@@ -568,35 +770,91 @@
     els.openingsLayer.innerHTML = out;
   }
 
-  /* ---- Corner handles, shown only while editing a custom outline ---- */
-  function reconcileVertices(s) {
-    // Rebuild wholesale: corners are few, and inserting/removing shifts indices.
-    els.floor.querySelectorAll(".vertex-hit").forEach((n) => n.remove());
-    if (state.room.shape !== "custom") return;
+  /* ---- Wall and corner handles -----------------------------------------
+     The outline is edited on the plan itself, in every shape mode: every wall
+     is a drag strip that slides the wall along its normal, every corner is a
+     handle, and each strip carries a "+" that drops a new corner into it.
+     Dragging a wall of a rectangle keeps it a rectangle; moving a corner is
+     what turns a template into a free outline.
 
-    for (let i = 0; i < R.poly.length; i++) {
-      const [x, y] = R.poly[i];
+     Nodes are pooled rather than rebuilt, because a drag holds on to the
+     handle it started on and re-creating it mid-gesture would strand it. ---- */
+  function poolNodes(cls, count, make) {
+    const cur = [...els.plan.querySelectorAll("." + cls)];
+    while (cur.length > count) cur.pop().remove();
+    while (cur.length < count) {
+      const node = make();
+      els.plan.appendChild(node);
+      cur.push(node);
+    }
+    cur.forEach((n, i) => (n.dataset.i = i));
+    return cur;
+  }
+
+  /* Which way a wall moves when you pull it, as a cursor. */
+  function wallCursor(ang) {
+    const d = (((ang * 180) / Math.PI) % 180 + 180) % 180;
+    if (d < 22.5 || d >= 157.5) return "ns-resize";
+    if (d < 67.5) return "nesw-resize";
+    if (d < 112.5) return "ew-resize";
+    return "nwse-resize";
+  }
+
+  const WALL_HIT_PX = 15;
+
+  function reconcileHandles(s) {
+    const edges = DRAW.active ? [] : R.edges;
+    const verts = DRAW.active ? [] : R.poly;
+
+    const walls = poolNodes("wall-hit", edges.length, () => {
       const node = document.createElement("div");
-      node.className = "vertex-hit" + (selectedId === `vtx:${i}` ? " selected" : "");
-      node.title = "Drag to reshape · click then press Delete to remove this corner";
+      node.className = "wall-hit";
+      node.innerHTML = `<span class="wall-add" title="Add a corner on this wall">+</span>`;
+      node.addEventListener("pointerdown", (e) => startDragWall(e, +node.dataset.i));
+      node.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        insertVertex(+node.dataset.i, ptM(e, planRect()));
+      });
+      const add = node.querySelector(".wall-add");
+      add.addEventListener("pointerdown", (e) => e.stopPropagation());
+      add.addEventListener("click", (e) => {
+        e.stopPropagation();
+        insertVertex(+node.dataset.i);
+      });
+      return node;
+    });
+    walls.forEach((node, i) => {
+      const e = edges[i];
+      const len = Math.max(10, e.len * s);
+      const cx = ((e.a[0] + e.b[0]) / 2) * s, cy = ((e.a[1] + e.b[1]) / 2) * s;
+      const deg = (e.ang * 180) / Math.PI;
+      node.style.width = round2(len) + "px";
+      node.style.height = WALL_HIT_PX + "px";
+      node.style.transform =
+        `translate(${round2(cx - len / 2)}px, ${round2(cy - WALL_HIT_PX / 2)}px) ` +
+        `rotate(${round2(deg)}deg)`;
+      node.style.cursor = wallCursor(e.ang);
+      node.title = `${R.names[i] || "Wall"} — ${fmtDim(e.len)}. Drag to move it, double-click to add a corner.`;
+      node.classList.toggle("dragging", !!wdrag && wdrag.i === i);
+      const add = node.querySelector(".wall-add");
+      add.hidden = len < 52;
+      add.style.transform = `translate(-50%, -50%) rotate(${round2(-deg)}deg)`;
+    });
+
+    const corners = poolNodes("vertex-hit", verts.length, () => {
+      const node = document.createElement("div");
+      node.className = "vertex-hit";
+      node.title = "Drag to reshape · drop it on the next corner to merge them · Delete removes it";
+      node.addEventListener("pointerdown", (e) => startDragVertex(e, +node.dataset.i));
+      return node;
+    });
+    corners.forEach((node, i) => {
+      const [x, y] = verts[i];
       node.style.transform = `translate(${round2(x * s - 7)}px, ${round2(y * s - 7)}px)`;
-      node.addEventListener("pointerdown", (e) => startDragVertex(e, i, node));
-      els.floor.appendChild(node);
-    }
-    // Midpoint "+" markers insert a corner into that wall.
-    for (let i = 0; i < R.edges.length; i++) {
-      const e = R.edges[i];
-      if (e.len * s < 34) continue;
-      const mx = ((e.a[0] + e.b[0]) / 2) * s, my = ((e.a[1] + e.b[1]) / 2) * s;
-      const node = document.createElement("div");
-      node.className = "vertex-hit mid";
-      node.textContent = "+";
-      node.title = "Add a corner on this wall";
-      node.style.transform = `translate(${round2(mx - 7)}px, ${round2(my - 7)}px)`;
-      node.addEventListener("pointerdown", (ev) => ev.stopPropagation());
-      node.addEventListener("click", () => insertVertex(i));
-      els.floor.appendChild(node);
-    }
+      node.classList.toggle("selected", selectedId === `vtx:${i}`);
+      node.classList.toggle("dragging", !!vdrag && vdrag.i === i);
+      node.classList.toggle("weld", !!vdrag && vdrag.weld === i);
+    });
   }
 
   function createPieceNode(p) {
@@ -608,7 +866,7 @@
       `<span class="p-lock" hidden aria-hidden="true">${ICON.lockSm}</span>` +
       `<span class="p-label"></span><span class="p-dim mono"></span>`;
     node.addEventListener("pointerdown", (e) => startDrag(e, p, node));
-    els.floor.appendChild(node);
+    els.plan.appendChild(node);
     return node;
   }
 
@@ -720,13 +978,13 @@
 
       li.querySelector(".swatch").addEventListener("input", (e) => {
         p.color = e.target.value;
-        const node = els.floor.querySelector(`.piece[data-id="${p.id}"]`);
+        const node = els.plan.querySelector(`.piece[data-id="${p.id}"]`);
         if (node) { node.style.background = p.color; node.style.color = textOn(p.color); }
         save();
       });
       li.querySelector(".piece-label-input").addEventListener("input", (e) => {
         p.label = e.target.value; save();
-        const node = els.floor.querySelector(`.piece[data-id="${p.id}"] .p-label`);
+        const node = els.plan.querySelector(`.piece[data-id="${p.id}"] .p-label`);
         if (node) node.textContent = p.label;
       });
       li.querySelector(".edit-w").addEventListener("change", (e) => {
@@ -835,15 +1093,11 @@
     const rm = state.room;
     if (document.activeElement !== els.roomW) els.roomW.value = fmt(rm.w);
     if (document.activeElement !== els.roomL) els.roomL.value = fmt(rm.l);
-    if (document.activeElement !== els.notchW) els.notchW.value = fmt(rm.notch.w);
-    if (document.activeElement !== els.notchL) els.notchL.value = fmt(rm.notch.l);
-    els.rectFields.hidden = rm.shape === "custom";
-    els.lFields.hidden = rm.shape !== "l";
-    els.customFields.hidden = rm.shape !== "custom";
-    els.shapeToggle.querySelectorAll("button").forEach((b) =>
-      b.classList.toggle("is-active", b.dataset.shape === rm.shape));
-    els.cornerPick.querySelectorAll("button").forEach((b) =>
-      b.classList.toggle("is-active", b.dataset.corner === rm.notch.corner));
+    // A room that is still a plain rectangle can be typed in; once it isn't,
+    // the numbers give way to the corner count and the way back.
+    els.rectFields.hidden = rm.shape !== "rect" || DRAW.active;
+    els.customFields.hidden = rm.shape === "rect" || DRAW.active;
+    els.drawOutline.classList.toggle("is-active", DRAW.active);
     els.typeToggle.querySelectorAll("button").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.type === addType));
     els.snapToggle.checked = state.snap;
@@ -948,34 +1202,305 @@
   }
 
   /* ================= Room shape operations ================= */
-  function setShape(shape) {
-    if (state.room.shape === shape) return;
-    // Entering custom seeds the vertex list from whatever is on screen now.
-    if (shape === "custom") state.room.poly = buildPoly();
-    state.room.shape = shape;
-    selectedId = null;
-    rebuildRoom(); save(); render();
-  }
-  function insertVertex(edgeIndex) {
-    const e = R.edges[edgeIndex];
-    if (!e) return;
-    const mid = [snapVal((e.a[0] + e.b[0]) / 2), snapVal((e.a[1] + e.b[1]) / 2)];
-    state.room.poly = R.poly.map((p) => [p[0], p[1]]);
-    state.room.poly.splice(edgeIndex + 1, 0, mid);
-    selectedId = `vtx:${edgeIndex + 1}`;
-    rebuildRoom(); save(); render();
-  }
-  function removeVertex(i) {
-    if (!state.room.poly || state.room.poly.length <= 3) return;
-    state.room.poly.splice(i, 1);
-    selectedId = null;
-    rebuildRoom(); save(); render();
-  }
   function resetPoly() {
+    cancelDrawing();
     state.room.shape = "rect";
     state.room.poly = null;
     selectedId = null;
     rebuildRoom(); save(); render();
+  }
+
+  /* ---- Committing an edited outline -------------------------------------
+     Every direct edit — a wall pushed, a corner dragged, an outline drawn —
+     lands here. It refuses a polygon that is no longer a room, and once the
+     gesture is over it re-origins the outline so its bounding box starts at
+     (0,0) again, carrying the furniture along so pieces stay put against the
+     walls they were sitting on. Mid-gesture it deliberately does NOT re-origin:
+     the plan would then slide out from under the pointer every time a wall
+     crossed the top or left edge.
+
+     Returns the offset it applied, or false if the outline was rejected. ---- */
+  function applyOutline(poly, gesture) {
+    const melt = gesture && gesture.weld >= 0 ? gesture.i : -1;
+    if (!polyValid(poly, melt)) return false;
+    let dx = 0, dy = 0;
+    if (gesture) {
+      // Pieces are re-derived from where they were when the drag began, so
+      // squeezing the room and opening it up again puts them back.
+      for (const [pc, x0, y0] of gesture.pieces0) { pc.x = x0; pc.y = y0; }
+    } else {
+      const bb = polyBBox(poly);
+      dx = bb.x0; dy = bb.y0;
+      if (dx || dy) {
+        poly = poly.map(([x, y]) => [x - dx, y - dy]);
+        for (const pc of state.pieces) { pc.x -= dx; pc.y -= dy; }
+      }
+      if (polyArea(poly) < 0) poly.reverse();   // keep the screen-clockwise winding
+    }
+    state.room.shape = "custom";
+    state.room.poly = poly;
+    if (!gesture) simplifyShape();
+    rebuildRoom();
+    return { dx, dy };
+  }
+
+  /* An outline that is exactly what a template would generate goes back to
+     being that template, so the width/length fields keep working after you
+     drag a wall of a plain rectangle. The comparison is vertex-for-vertex in
+     order: any other match would renumber the walls under the doors already
+     hung on them. */
+  function simplifyShape() {
+    const poly = state.room.poly;
+    if (!poly) return;
+    const bb = polyBBox(poly);
+    const w = bb.w, l = bb.l;
+    const same = (a, b) => a.length === b.length &&
+      a.every((q, i) => Math.abs(q[0] - b[i][0]) < 1e-4 && Math.abs(q[1] - b[i][1]) < 1e-4);
+    if (poly.length !== 4) return;
+    if (!same(buildPolyFrom({ shape: "rect", w, l }), poly)) return;
+    state.room.shape = "rect";
+    state.room.w = w; state.room.l = l;
+    state.room.poly = null;
+  }
+
+  /* ---- Keeping doors and windows on the right wall ----------------------
+     Openings are stored as "wall index + offset along it", so any edit that
+     adds, drops or reorders walls has to re-home them. Their positions on the
+     plan are the thing worth preserving, so they are recorded before the edit
+     and re-attached to whatever wall ends up nearest afterwards. */
+  function openingCenters() {
+    return state.openings.map((o) => {
+      const e = edgeOf(o);
+      const t = o.pos + openWidth(o) / 2;
+      return { o, x: e.a[0] + e.ux * t, y: e.a[1] + e.uy * t };
+    });
+  }
+  function reattachOpenings(list, dx = 0, dy = 0) {
+    for (const { o, x, y } of list) {
+      const hit = nearestEdge(x - dx, y - dy);
+      o.edge = hit.index;
+      o.pos = hit.along - openWidth(o) / 2;
+      clampOpening(o);
+    }
+  }
+
+  /* Split a wall in two. Without a point it splits at the midpoint, which is
+     what the "+" on the wall does. */
+  function insertVertex(edgeIndex, at) {
+    const e = R.edges[edgeIndex];
+    if (!e) return;
+    const pt = at || [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2];
+    const poly = clonePoly(R.poly);
+    poly.splice(edgeIndex + 1, 0, [snapVal(pt[0]), snapVal(pt[1])]);
+    const centers = openingCenters();
+    const off = applyOutline(poly, null);
+    if (!off) return;
+    reattachOpenings(centers, off.dx, off.dy);
+    selectedId = `vtx:${edgeIndex + 1}`;
+    save(); render();
+  }
+  function removeVertex(i) {
+    if (R.poly.length <= 3) return;
+    const poly = clonePoly(R.poly);
+    poly.splice(i, 1);
+    const centers = openingCenters();
+    const off = applyOutline(poly, null);
+    if (!off) return;
+    reattachOpenings(centers, off.dx, off.dy);
+    selectedId = null;
+    save(); render();
+  }
+
+  /* ---- Undo for a single gesture: enough state to put the room back the way
+       it was if a drag is abandoned with Escape, or ends somewhere illegal. */
+  function snapshotOutline() {
+    return {
+      room: JSON.parse(JSON.stringify(state.room)),
+      pieces: state.pieces.map((p) => [p.id, p.x, p.y]),
+      openings: state.openings.map((o) => [o.id, o.edge, o.pos, o.width]),
+    };
+  }
+  function restoreOutline(snap) {
+    state.room = snap.room;
+    const at = new Map(snap.pieces.map(([id, x, y]) => [id, [x, y]]));
+    for (const p of state.pieces) {
+      const q = at.get(p.id);
+      if (q) { p.x = q[0]; p.y = q[1]; }
+    }
+    const op = new Map(snap.openings.map(([id, edge, pos, width]) => [id, [edge, pos, width]]));
+    for (const o of state.openings) {
+      const q = op.get(o.id);
+      if (q) { o.edge = q[0]; o.pos = q[1]; o.width = q[2]; }
+    }
+    rebuildRoom();
+  }
+
+  /* ================= Drawing an outline from scratch =================
+     A sketch mode: click corners onto the grid and the walls follow, with the
+     first corner acting as the target that closes the loop. Nothing is
+     committed until the ring closes, so the room on screen stays untouched
+     underneath as a tracing reference. */
+  const DRAW = { active: false, blank: false, pts: [], hover: null, close: false, undo: null, msg: "" };
+  const CLOSE_PX = 15;      // how near the first corner counts as "closing"
+
+  function startDrawing(blank) {
+    if (DRAW.active) return;
+    endOutlineDrag(true);
+    DRAW.active = true;
+    DRAW.blank = !!blank;      // first visit: nothing to trace over yet
+    DRAW.pts = []; DRAW.hover = null; DRAW.close = false; DRAW.msg = "";
+    DRAW.undo = snapshotOutline();
+    selectedId = null;
+    render();
+  }
+  function cancelDrawing() {
+    if (!DRAW.active) return;
+    DRAW.active = false;
+    DRAW.pts = []; DRAW.hover = null; DRAW.close = false; DRAW.msg = "";
+    render();
+  }
+  function undoDrawPoint() {
+    if (!DRAW.active || !DRAW.pts.length) return;
+    DRAW.pts.pop();
+    DRAW.msg = "";
+    render();
+  }
+  function finishDrawing() {
+    if (!DRAW.active) return;
+    if (DRAW.pts.length < 3) {
+      DRAW.msg = "A room needs at least three corners.";
+      syncDrawBar();
+      return;
+    }
+    const centers = openingCenters();
+    const off = applyOutline(clonePoly(DRAW.pts), null);
+    if (!off) {
+      DRAW.msg = "Those walls cross or double back — undo the last corner and try again.";
+      syncDrawBar();
+      return;
+    }
+    reattachOpenings(centers, off.dx, off.dy);
+    DRAW.active = false;
+    DRAW.pts = []; DRAW.hover = null; DRAW.close = false; DRAW.msg = "";
+    selectedId = null;
+    save(); render();
+  }
+
+  /* Where the pointer wants to drop a corner: on the grid, squared up to the
+     previous wall when it is nearly square already (hold Shift for a free
+     angle), and pulled onto the first corner once the ring can close. */
+  function sketchPoint(e) {
+    let [x, y] = ptM(e, planRect());
+    DRAW.close = false;
+    const first = DRAW.pts[0];
+    if (DRAW.pts.length >= 3 &&
+        Math.hypot(x - first[0], y - first[1]) * baseScale < CLOSE_PX) {
+      DRAW.close = true;
+      return [first[0], first[1]];
+    }
+    x = snapVal(x); y = snapVal(y);
+    const last = DRAW.pts[DRAW.pts.length - 1];
+    if (last && !e.shiftKey) {
+      const dx = Math.abs(x - last[0]), dy = Math.abs(y - last[1]);
+      if (dx > dy * 3.5) y = last[1];
+      else if (dy > dx * 3.5) x = last[0];
+    }
+    return [x, y];
+  }
+
+  function addSketchPoint(e) {
+    const pt = sketchPoint(e);
+    DRAW.hover = pt;
+    if (DRAW.close) { finishDrawing(); return; }
+    const last = DRAW.pts[DRAW.pts.length - 1];
+    // Ignore a second click on the corner just dropped.
+    if (last && Math.hypot(last[0] - pt[0], last[1] - pt[1]) * baseScale < 4) return;
+    DRAW.pts.push(pt);
+    DRAW.msg = "";
+    render();
+  }
+
+  /* The sketch sheet: grid across the whole stage, the room being replaced
+     left in as a faint tracing guide, and the walls drawn so far with their
+     lengths called out as they are laid down. */
+  function drawSketch(s) {
+    sizeLayer(els.roomLayer, s);
+    const u = U();
+    const gridM = u.grid / u.perM;
+    const majorMult = Math.max(1, Math.round(u.major / u.grid));
+    const x0 = V.ox * s, y0 = V.oy * s, x1 = (V.ox + V.w) * s, y1 = (V.oy + V.l) * s;
+    let minor = "", major = "";
+    if (gridM * s >= 6) {
+      for (let i = Math.ceil(V.ox / gridM); i <= Math.floor((V.ox + V.w) / gridM); i++) {
+        const x = round2(i * gridM * s);
+        const d = `M${x} ${round2(y0)}V${round2(y1)}`;
+        if (i % majorMult) minor += d; else major += d;
+      }
+      for (let j = Math.ceil(V.oy / gridM); j <= Math.floor((V.oy + V.l) / gridM); j++) {
+        const y = round2(j * gridM * s);
+        const d = `M${round2(x0)} ${y}H${round2(x1)}`;
+        if (j % majorMult) minor += d; else major += d;
+      }
+    }
+
+    const at = ([x, y]) => `${round2(x * s)},${round2(y * s)}`;
+    const pts = DRAW.pts;
+    let out =
+      `<rect class="sketch-bg" x="${round2(x0)}" y="${round2(y0)}" ` +
+      `width="${round2(x1 - x0)}" height="${round2(y1 - y0)}" />` +
+      `<path class="grid-minor" d="${minor}" />` +
+      `<path class="grid-major" d="${major}" />` +
+      (DRAW.blank ? "" : `<polygon class="sketch-ghost" points="${R.poly.map(at).join(" ")}" />`);
+
+    if (pts.length) {
+      const hover = DRAW.hover;
+      const ring = hover && !DRAW.close ? pts.concat([hover]) : pts;
+      if (ring.length >= 3) {
+        out += `<polygon class="sketch-fill${DRAW.close ? " armed" : ""}" points="${ring.map(at).join(" ")}" />`;
+      }
+      out += `<path class="sketch-line" d="M${pts.map((q) => `${round2(q[0] * s)} ${round2(q[1] * s)}`).join("L")}" />`;
+      const last = pts[pts.length - 1];
+      if (hover) {
+        out += `<path class="sketch-band${DRAW.close ? " closing" : ""}" ` +
+               `d="M${round2(last[0] * s)} ${round2(last[1] * s)}` +
+               `L${round2(hover[0] * s)} ${round2(hover[1] * s)}" />`;
+      }
+      // Lengths: every wall laid down, plus the one being dragged out now.
+      const segs = pts.slice(1).map((q, i) => [pts[i], q]);
+      if (hover && !DRAW.close) segs.push([last, hover]);
+      if (DRAW.close) segs.push([last, pts[0]]);
+      for (const [a, b] of segs) {
+        const dx = b[0] - a[0], dy = b[1] - a[1];
+        const len = Math.hypot(dx, dy);
+        if (len * s < 26) continue;
+        out += dimChip(((a[0] + b[0]) / 2) * s + (dy / len) * 15,
+                       ((a[1] + b[1]) / 2) * s - (dx / len) * 15,
+                       (Math.atan2(dy, dx) * 180) / Math.PI, fmtDim(len), " live");
+      }
+      pts.forEach((q, i) => {
+        const cls = i === 0 ? `sketch-dot start${DRAW.close ? " armed" : ""}` : "sketch-dot";
+        out += `<circle class="${cls}" cx="${round2(q[0] * s)}" cy="${round2(q[1] * s)}" r="${i === 0 ? 7 : 4}" />`;
+      });
+    } else if (DRAW.hover) {
+      out += `<circle class="sketch-dot" cx="${round2(DRAW.hover[0] * s)}" cy="${round2(DRAW.hover[1] * s)}" r="4" />`;
+    }
+    els.roomLayer.innerHTML = out;
+  }
+
+  function syncDrawBar() {
+    els.drawBar.hidden = !DRAW.active;
+    if (!DRAW.active) return;
+    const n = DRAW.pts.length;
+    els.drawMsg.textContent = DRAW.msg || (
+      n === 0 ? (DRAW.blank
+        ? "Start with your room: click a corner, then walk around the walls."
+        : "Click to drop the first corner.")
+      : n < 3 ? "Keep clicking corners — walls square up on their own, hold Shift for a free angle."
+      : "Click the first corner again to close the room, or press Enter.");
+    els.drawCancel.textContent = DRAW.blank ? "Skip" : "Cancel";
+    els.drawMsg.classList.toggle("warn", !!DRAW.msg);
+    els.drawUndo.disabled = n === 0;
+    els.drawFinish.disabled = n < 3;
   }
 
   /* ================= Dragging ================= */
@@ -988,7 +1513,7 @@
     if (selectedId !== p.id) selectedId = p.id; // ensure selected after toggle
     node.classList.add("dragging");
     node.setPointerCapture(e.pointerId);
-    const rect = els.floor.getBoundingClientRect();
+    const rect = planRect();
     drag = {
       p, node, pointerId: e.pointerId,
       // offset between pointer and piece origin, in meters
@@ -1095,7 +1620,7 @@
     selectedId = o.id;
     node.classList.add("dragging");
     node.setPointerCapture(e.pointerId);
-    odrag = { o, node, pointerId: e.pointerId, rect: els.floor.getBoundingClientRect() };
+    odrag = { o, node, pointerId: e.pointerId, rect: planRect() };
     render(); // reflect selection in the lists/outline
     node.addEventListener("pointermove", onDragOpening);
     node.addEventListener("pointerup", endDragOpening);
@@ -1118,7 +1643,7 @@
     const py = (e.clientY - rect.top) / baseScale;
     const hit = nearestEdge(px, py);
     o.edge = hit.index;
-    o.pos = snapVal(hit.along - o.width / 2);
+    o.pos = snapVal(hit.along - openWidth(o) / 2);
     clampOpening(o);
     drawOpenings(baseScale);
     positionOpeningHit(odrag.node, o, baseScale);
@@ -1134,38 +1659,150 @@
     save(); render();
   }
 
-  /* ---- Dragging a corner of a custom outline ---- */
-  let vdrag = null;
-  function startDragVertex(e, i, node) {
+  /* ---- Reshaping the room by hand ---------------------------------------
+     Wall drags and corner drags share one shape: freeze the view so the sheet
+     can't move under the pointer, work from a copy of the outline taken when
+     the gesture started (so every pointer move recomputes from scratch instead
+     of accumulating drift), refuse anything that isn't a room any more, and
+     re-origin once on release.
+
+     Both listen on the window rather than capturing the pointer: the handles
+     are pooled and can be re-positioned mid-drag, and a capture held on a node
+     that gets touched would strand the rest of the gesture. ---- */
+  let wdrag = null, vdrag = null;
+
+  function beginOutlineGesture(e) {
+    freezeView();
+    renderPlan();                       // apply the frozen frame before measuring
+    return {
+      pointerId: e.pointerId,
+      rect: planRect(),
+      poly: clonePoly(R.poly),
+      pieces0: state.pieces.map((p) => [p, p.x, p.y]),
+      undo: snapshotOutline(),
+      weld: -1,
+      moved: false,
+    };
+  }
+  function outlineListeners(on, move, up) {
+    const fn = on ? window.addEventListener : window.removeEventListener;
+    fn.call(window, "pointermove", move);
+    fn.call(window, "pointerup", up);
+    fn.call(window, "pointercancel", up);
+  }
+  /* Settle whatever was being dragged. `abort` puts the room back. */
+  function endOutlineDrag(abort) {
+    const g = wdrag || vdrag;
+    if (!g) return false;
+    if (wdrag) outlineListeners(false, onDragWall, endDragWall);
+    else outlineListeners(false, onDragVertex, endDragVertex);
+    const welding = !!vdrag && g.weld >= 0 && g.moved && R.poly.length > 3;
+    wdrag = null; vdrag = null; frozenView = null;
+    if (abort || !g.moved) {
+      restoreOutline(g.undo);
+    } else {
+      let poly = clonePoly(R.poly);
+      let centers = null;
+      if (welding) {
+        centers = openingCenters();
+        poly.splice(g.i, 1);            // the two corners become one
+      }
+      const off = applyOutline(poly, null);
+      if (!off) restoreOutline(g.undo);
+      else if (centers) reattachOpenings(centers, off.dx, off.dy);
+      save();
+    }
+    if (g.weld >= 0) selectedId = null;
+    render();
+    return true;
+  }
+
+  /* ---- Pushing a wall ---- */
+  function startDragWall(e, i) {
     if (e.button != null && e.button !== 0) return;
+    if (DRAW.active || wdrag || vdrag) return;
+    const edge = R.edges[i];
+    if (!edge) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectedId = null;
+    const g = beginOutlineGesture(e);
+    g.i = i;
+    g.nx = edge.nx; g.ny = edge.ny;
+    // The wall's own distance from the origin along its normal: snapping that
+    // is what lands a dragged wall back on the grid.
+    g.proj0 = edge.a[0] * edge.nx + edge.a[1] * edge.ny;
+    g.start = ptM(e, g.rect);
+    wdrag = g;
+    outlineListeners(true, onDragWall, endDragWall);
+    renderPlan();
+  }
+  function onDragWall(e) {
+    if (!wdrag || e.pointerId !== wdrag.pointerId) return;
+    e.preventDefault();
+    const pt = ptM(e, wdrag.rect);
+    let d = (pt[0] - wdrag.start[0]) * wdrag.nx + (pt[1] - wdrag.start[1]) * wdrag.ny;
+    d = snapVal(wdrag.proj0 + d) - wdrag.proj0;
+    const next = moveEdgePoly(wdrag.poly, wdrag.i, d);
+    if (!polyValid(next)) return;        // a move that would tangle the walls is simply refused
+    wdrag.moved = true;
+    if (applyOutline(next, wdrag)) renderPlan();
+  }
+  function endDragWall(e) {
+    if (!wdrag || (e && e.pointerId !== wdrag.pointerId)) return;
+    endOutlineDrag(false);
+  }
+
+  /* ---- Moving a corner ---- */
+  const WELD_PX = 14;
+  /* The neighbouring corner this one is close enough to merge with. Only
+     neighbours: welding two corners from opposite sides of the room would
+     pinch it into two rooms rather than simplify it. */
+  function weldTarget(g, x, y) {
+    const n = g.poly.length;
+    if (n <= 3) return -1;               // a triangle has no corner to spare
+    let best = -1, bd = WELD_PX / baseScale;
+    for (const j of [(g.i - 1 + n) % n, (g.i + 1) % n]) {
+      const d = Math.hypot(g.poly[j][0] - x, g.poly[j][1] - y);
+      if (d < bd) { bd = d; best = j; }
+    }
+    return best;
+  }
+  function startDragVertex(e, i) {
+    if (e.button != null && e.button !== 0) return;
+    if (DRAW.active || wdrag || vdrag) return;
+    const v = R.poly[i];
+    if (!v) return;
     e.preventDefault();
     e.stopPropagation();
     selectedId = `vtx:${i}`;
-    node.classList.add("dragging", "selected");
-    node.setPointerCapture(e.pointerId);
-    vdrag = { i, node, pointerId: e.pointerId, rect: els.floor.getBoundingClientRect(), moved: false };
-    node.addEventListener("pointermove", onDragVertex);
-    node.addEventListener("pointerup", endDragVertex);
-    node.addEventListener("pointercancel", endDragVertex);
+    const g = beginOutlineGesture(e);
+    g.i = i;
+    const p0 = ptM(e, g.rect);
+    g.gx = p0[0] - v[0]; g.gy = p0[1] - v[1];   // grab offset, so the corner doesn't jump
+    vdrag = g;
+    outlineListeners(true, onDragVertex, endDragVertex);
+    renderPlan();
   }
   function onDragVertex(e) {
-    if (!vdrag) return;
-    const { rect, i } = vdrag;
-    const x = Math.max(0, snapVal((e.clientX - rect.left) / baseScale));
-    const y = Math.max(0, snapVal((e.clientY - rect.top) / baseScale));
-    state.room.poly[i] = [x, y];
+    if (!vdrag || e.pointerId !== vdrag.pointerId) return;
+    e.preventDefault();
+    const pt = ptM(e, vdrag.rect);
+    let x = snapVal(pt[0] - vdrag.gx), y = snapVal(pt[1] - vdrag.gy);
+    // Auto-connect: bring a corner onto its neighbour and the two weld into
+    // one when you let go, dropping the wall that ran between them.
+    const j = weldTarget(vdrag, x, y);
+    vdrag.weld = j;
+    if (j >= 0) { x = vdrag.poly[j][0]; y = vdrag.poly[j][1]; }
+    const poly = clonePoly(vdrag.poly);
+    poly[vdrag.i] = [x, y];
+    if (!polyValid(poly, j >= 0 ? vdrag.i : -1)) return;
     vdrag.moved = true;
-    rebuildRoom();
-    render();       // the whole sheet resizes as a corner moves, so redraw it all
+    if (applyOutline(poly, vdrag)) renderPlan();
   }
   function endDragVertex(e) {
-    if (!vdrag) return;
-    try { vdrag.node.releasePointerCapture(vdrag.pointerId); } catch (_) {}
-    vdrag.node.removeEventListener("pointermove", onDragVertex);
-    vdrag.node.removeEventListener("pointerup", endDragVertex);
-    vdrag.node.removeEventListener("pointercancel", endDragVertex);
-    vdrag = null;
-    save(); render();
+    if (!vdrag || (e && e.pointerId !== vdrag.pointerId)) return;
+    endOutlineDrag(false);
   }
 
   /* ================= Presets UI ================= */
@@ -1201,14 +1838,32 @@
   /* ================= Events ================= */
   function bind() {
     // Room shape
-    els.shapeToggle.querySelectorAll("button").forEach((b) =>
-      b.addEventListener("click", () => setShape(b.dataset.shape)));
-    els.cornerPick.querySelectorAll("button").forEach((b) =>
-      b.addEventListener("click", () => {
-        state.room.notch.corner = b.dataset.corner;
-        rebuildRoom(); save(); render();
-      }));
     els.resetPoly.addEventListener("click", resetPoly);
+    els.drawOutline.addEventListener("click", () => {
+      if (DRAW.active) cancelDrawing(); else startDrawing();
+    });
+    els.drawUndo.addEventListener("click", undoDrawPoint);
+    els.drawFinish.addEventListener("click", finishDrawing);
+    els.drawCancel.addEventListener("click", cancelDrawing);
+
+    /* Sketching happens on the stage itself: the pointer trails a wall behind
+       it, a click drops a corner, and a double-click (or the first corner)
+       closes the room. */
+    els.stageScroll.addEventListener("pointermove", (e) => {
+      if (!DRAW.active) return;
+      DRAW.hover = sketchPoint(e);
+      renderPlan();
+    });
+    els.stageScroll.addEventListener("pointerleave", () => {
+      if (!DRAW.active) return;
+      DRAW.hover = null;
+      renderPlan();
+    });
+    els.stageScroll.addEventListener("dblclick", (e) => {
+      if (!DRAW.active) return;
+      e.preventDefault();
+      finishDrawing();
+    });
 
     // Room dimensions
     const applyRoom = () => {
@@ -1220,16 +1875,6 @@
     };
     els.roomW.addEventListener("change", applyRoom);
     els.roomL.addEventListener("change", applyRoom);
-
-    const applyNotch = () => {
-      const w = toMeters(parseFloat(els.notchW.value) || 0);
-      const l = toMeters(parseFloat(els.notchL.value) || 0);
-      if (w > 0) state.room.notch.w = w;
-      if (l > 0) state.room.notch.l = l;
-      rebuildRoom(); save(); render();
-    };
-    els.notchW.addEventListener("change", applyNotch);
-    els.notchL.addEventListener("change", applyNotch);
 
     // Add doors / windows
     els.addDoor.addEventListener("click", () => addOpening("door"));
@@ -1298,8 +1943,14 @@
 
     // Deselect on background click
     els.stageScroll.addEventListener("pointerdown", (e) => {
+      if (DRAW.active) {
+        if (e.button != null && e.button !== 0) return;
+        e.preventDefault();
+        addSketchPoint(e);
+        return;
+      }
       if (e.target === els.stageScroll || e.target === els.stage ||
-          e.target === els.floor || e.target === els.roomLayer) {
+          e.target === els.floor || e.target === els.plan || e.target === els.roomLayer) {
         if (selectedId) { selectedId = null; render(); }
       }
     });
@@ -1313,7 +1964,15 @@
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (e.key === "Escape") {
+        // Escape backs out of whatever is in progress, innermost first.
+        if (endOutlineDrag(true)) return;
+        if (DRAW.active) { cancelDrawing(); return; }
         if (selectedId) { selectedId = null; render(); }
+        return;
+      }
+      if (DRAW.active) {
+        if (e.key === "Enter") { e.preventDefault(); finishDrawing(); }
+        else if (e.key === "Backspace" || e.key === "Delete") { e.preventDefault(); undoDrawPoint(); }
         return;
       }
       if (!selectedId) return;
@@ -1381,33 +2040,13 @@
     } catch (_) {}
   }
 
-  function seedExample() {
-    // First-run: drop in a couple of pieces, a closet, a door and a window
-    if (state.pieces.length || state.openings.length) return;
-    const place = (p, xFt, yFt) => {
-      p.x = xFt * M_PER_FT; p.y = yFt * M_PER_FT; clampPiece(p);
-    };
-    place(addPiece("Queen bed", 5, 6.7, "furniture"), 0.5, 5);
-    place(addPiece("Dresser", 5, 1.7, "furniture"), 6.5, 12);
-    place(addPiece("Reach-in closet", 6, 2, "closet"), 6, 0);
-    const win = addOpening("window");
-    win.pos = 1 * M_PER_FT;                        // clear of the closet
-    clampOpening(win);
-    const door = addOpening("door");
-    if (R.edges.length > 2) {                      // the far wall on a rectangle
-      door.edge = 2;
-      door.pos = Math.max(0, R.edges[2].len / 2 - door.width / 2);
-      clampOpening(door);
-    }
-    selectedId = null;
-    save();
-  }
-
   initTheme();
   rebuildRoom();
-  save();          // write back anything migrate() had to fix up
+  if (!firstVisit) save();     // write back anything migrate() had to fix up
   buildPresets();
   bind();
-  seedExample();
+  // Nothing saved yet: open on the sketch so the first thing anyone does is
+  // draw their own room. Skipping it leaves the plain rectangle underneath.
+  if (firstVisit) startDrawing(true);
   render();
 })();
