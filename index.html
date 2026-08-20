@@ -44,6 +44,13 @@
       <!-- Room -->
       <section class="panel">
         <h2 class="panel-title">Room / wall</h2>
+        <!-- Drawing is the primary way to define a room; the fields below just
+             describe whatever room you end up with. -->
+        <button type="button" id="drawOutline" class="btn btn-ghost btn-wide">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 20h16"/><path d="M14.5 4.5l5 5L9 20H4v-5z"/></svg>
+          <span class="btn-label" id="drawLabel">Draw the outline</span>
+        </button>
+
         <div id="rectFields">
           <div class="field-row">
             <label class="field">
@@ -66,11 +73,7 @@
           </div>
         </div>
 
-        <p class="empty-hint shape-hint">The room is whatever outline you give it. Drag any <strong>wall</strong> to move it, drag a <strong>corner</strong> to pull the shape about, or hit the <span class="kbd">+</span> on a wall to add a corner. Drop a corner onto its neighbour and the two join up.</p>
-        <button type="button" id="drawOutline" class="btn btn-ghost btn-wide">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20h16"/><path d="M14.5 4.5l5 5L9 20H4v-5z"/></svg>
-          Draw the outline
-        </button>
+        <p class="empty-hint shape-hint" id="shapeHint">The room is whatever outline you give it. Drag any <strong>wall</strong> to move it, drag a <strong>corner</strong> to pull the shape about, or hit the <span class="kbd">+</span> on a wall to add a corner. Drop a corner onto its neighbour and the two join up.</p>
 
         <p class="room-meta"><span id="roomArea">—</span> · <span id="pieceCount">0 pieces</span></p>
       </section>

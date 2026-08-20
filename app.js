@@ -122,7 +122,7 @@
     rectFields: $("rectFields"), customFields: $("customFields"),
     roomW: $("roomW"), roomL: $("roomL"),
     resetPoly: $("resetPoly"), pointCount: $("pointCount"),
-    drawOutline: $("drawOutline"),
+    drawOutline: $("drawOutline"), drawLabel: $("drawLabel"), shapeHint: $("shapeHint"),
     drawBar: $("drawBar"), drawMsg: $("drawMsg"),
     drawUndo: $("drawUndo"), drawFinish: $("drawFinish"), drawCancel: $("drawCancel"),
     roomArea: $("roomArea"), pieceCount: $("pieceCount"),
@@ -1097,7 +1097,13 @@
     // the numbers give way to the corner count and the way back.
     els.rectFields.hidden = rm.shape !== "rect" || DRAW.active;
     els.customFields.hidden = rm.shape === "rect" || DRAW.active;
+    // While the sketch is open the bar owns undo/cancel/finish, so the button
+    // just says what is happening. It used to quietly toggle the sketch off,
+    // which read as the button doing nothing at all.
+    els.drawOutline.disabled = DRAW.active;
     els.drawOutline.classList.toggle("is-active", DRAW.active);
+    els.drawLabel.textContent = DRAW.active ? "Drawing — click the plan" : "Draw the outline";
+    els.shapeHint.hidden = DRAW.active;
     els.typeToggle.querySelectorAll("button").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.type === addType));
     els.snapToggle.checked = state.snap;
@@ -1839,9 +1845,7 @@
   function bind() {
     // Room shape
     els.resetPoly.addEventListener("click", resetPoly);
-    els.drawOutline.addEventListener("click", () => {
-      if (DRAW.active) cancelDrawing(); else startDrawing();
-    });
+    els.drawOutline.addEventListener("click", () => startDrawing());
     els.drawUndo.addEventListener("click", undoDrawPoint);
     els.drawFinish.addEventListener("click", finishDrawing);
     els.drawCancel.addEventListener("click", cancelDrawing);
